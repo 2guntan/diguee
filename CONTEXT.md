@@ -34,6 +34,12 @@ _Avoid_ : OTP (en dehors du code), mot de passe
 Le contenu d'un questionnaire rempli, avec la région et la tranche d'âge déclarées, sans aucun identifiant de la personne.
 _Avoid_ : bulletin, vote
 
+### Cadre
+
+**Responsable du traitement** :
+La structure juridique qui porte Diguee et qui répond légalement des données ; elle est distincte de la marque Diguee.
+_Avoid_ : propriétaire, éditeur
+
 ## Relationships
 
 - Une **Participation** et une **Réponse** naissent au même envoi, mais ne sont jamais reliées l'une à l'autre.
