@@ -50,7 +50,7 @@ Ce sont les sujets du grilling ; aucun n'est décidé.
    - coût par code, et budget ;
    - lutte contre les fermes de SIM et le spam (limites par IP et par numéro, captcha).
 3. **Cadre légal** : déclaration ou autorisation auprès de la CDP (Commission des données personnelles du Sénégal) pour traiter les numéros, la région et l'âge ; mentions légales ; structure qui porte le projet, encore en constitution.
-4. **Architecture et hébergement** : rester sur le mutualisé N0C (PHP ou Node selon les limites) ou passer sur un service géré séparé pour l'API et la base ? Contrainte forte : coût faible et maintenance simple.
+4. **Architecture et hébergement** : l'orientation est retenue (voir §8). Il reste à choisir l'hébergeur de l'API et de la base, et le pays où les données sont stockées, en lien avec la CDP. Contrainte forte : coût faible et maintenance simple.
 5. **Publication des résultats** :
    - seuil de 1 000 réponses ;
    - découpage par région et par âge, et seuil minimal par case pour ne pas permettre de ré-identifier quelqu'un ;
@@ -84,6 +84,41 @@ Ce sont les sujets du grilling ; aucun n'est décidé.
 - Ne jamais saisir de mot de passe ni de code de vérification : c'est le porteur qui les entre.
 - Prévenir avant toute publication sur les comptes Diguee.
 - Noms de fichiers lisibles, avec des espaces et sans tirets bas (ex. « Spec plateforme Diguee v1.md »).
+
+## 8. Orientation technique retenue par le porteur
+
+Le porteur a validé ces choix le 22/11/2026. Ce sont des hypothèses de départ : le grilling doit les éprouver, puis les consigner en ADR, sans les rouvrir de zéro.
+
+**Menaces prioritaires**, dans l'ordre :
+
+1. bourrage de votes (fermes de SIM, numéros jetables, robots) ;
+2. fraude au SMS (envois massifs de codes vers des numéros surtaxés) ;
+3. saturation du site et défacement ;
+4. fuite ou réquisition de données permettant de savoir qui a répondu quoi. C'est le scénario le plus grave.
+
+**Principes** :
+
+- **Pas de lien entre l'identité et la réponse.** Le numéro n'est jamais stocké en clair : seulement un HMAC calculé avec une clé gardée hors de la base. La table « a déjà voté » et la table des réponses ne partagent aucune clé. Les horodatages sont grossiers et les écritures groupées, pour éviter qu'on les apparie par l'heure. Une fuite de la base ne doit rien révéler sur personne.
+- **Minimisation.** Collecter seulement la région et la tranche d'âge déclarées. Pas d'adresse IP complète dans les journaux.
+- **Anti-fraude dès l'entrée** :
+  - liste blanche des préfixes mobiles sénégalais ;
+  - limites par numéro et par IP ;
+  - captcha discret avant l'envoi d'un code ;
+  - plafond de dépenses chez le fournisseur de codes.
+- **Isolation.** Le backend ne va pas sur l'hébergement mutualisé PlanetHoster, qui est partagé avec l'activité d'une autre entreprise du porteur. Prévoir :
+  - un pare-feu applicatif et une protection anti-saturation devant le site (Cloudflare ou équivalent) ;
+  - une base PostgreSQL gérée et chiffrée ;
+  - des sauvegardes chiffrées.
+- **Transparence.** Code ouvert, méthodologie publiée, journal public des résultats, test d'intrusion avant le lancement. Double authentification sur tous les comptes, et secrets gérés hors du dépôt.
+- **Légal.** Vérifier avec la CDP si un hébergement des données hors du Sénégal demande une autorisation de transfert, avant de choisir l'hébergeur.
+
+**Technologies** :
+
+- **API en Go**, avec la bibliothèque standard en priorité et un minimum de dépendances : moins de risque de bibliothèque compromise, un code facile à auditer, un seul exécutable.
+- **Pages HTML générées côté serveur** (`html/template`) avec très peu de JavaScript, pour rester légères sur mobile en 3G.
+- **PostgreSQL**.
+- La vitrine statique actuelle (`site/index.html`) reste valable : la consultation viendra la compléter.
+- **Rust est écarté pour la phase 1.** Il ne répond pas aux risques principaux, peu de développeurs le maîtrisent à Dakar, et il ralentirait le développement. À reconsidérer en phase 2 pour un composant critique isolé, comme un module de vote vérifiable.
 
 ## Skills suggérés pour l'agent suivant
 
