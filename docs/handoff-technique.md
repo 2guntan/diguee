@@ -128,3 +128,17 @@ Le porteur a validé ces choix le 22/11/2026. Ce sont des hypothèses de départ
 4. **`engineering:system-design`** ou **`engineering:architecture`**, en appui sur le choix d'hébergement et l'architecture anonymat/OTP.
 5. **`operations:compliance-tracking`**, pour suivre la démarche CDP et les obligations sur les données.
 6. Plus tard : **`mattpocock-skills:implement`** ou **`mattpocock-skills:tdd`** pour coder, et **`engineering:deploy-checklist`** avant la mise en production.
+
+## 9. Décisions issues du grilling (22/11/2026)
+
+Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire dans `CONTEXT.md`. Cette section garde les réglages faciles à ajuster, pour la future spécification.
+
+- **Structure** : une structure juridique distincte de l'autre entreprise du porteur existe déjà, avec ses statuts et son NINEA. Elle porte les comptes Meta et SMS. Une association pourra être créée plus tard pour reprendre le projet ; la mention légale du site devra alors être adaptée. Le §5 (« structure en constitution ») est donc dépassé.
+- **Anti-fraude avant l'envoi d'un code** :
+  - préfixes acceptés : 70, 75, 76, 77, 78 (liste à confirmer auprès de l'ARTP) ;
+  - captcha Cloudflare Turnstile, vérifié côté serveur ;
+  - par numéro : 3 codes par 24 h, un code valable 10 minutes, 5 essais par code ;
+  - par IP : 30 demandes par heure, puis ralentissement et alerte, sans blocage (à cause du CGNAT des opérateurs) ;
+  - compteurs en mémoire, sans IP dans les journaux ;
+  - coupe-circuit : plafond journalier chez les fournisseurs, et suspension automatique du SMS au-delà de 3 fois le volume horaire moyen ;
+  - fermes de SIM : risque accepté, avec la règle « une SIM, une participation » publiée et une surveillance des pics par préfixe ou par région.
