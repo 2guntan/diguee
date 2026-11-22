@@ -26,6 +26,10 @@ _Avoid_ : numéro chiffré, hash
 La fin de la consultation, six mois après l'ouverture, où la clé et toutes les empreintes sont détruites.
 _Avoid_ : fin du vote
 
+**Code** :
+Le code à usage unique envoyé au numéro, par WhatsApp en priorité, par SMS en secours, pour vérifier qu'il appartient bien à la personne.
+_Avoid_ : OTP (en dehors du code), mot de passe
+
 **Réponse** :
 Le contenu d'un questionnaire rempli, avec la région et la tranche d'âge déclarées, sans aucun identifiant de la personne.
 _Avoid_ : bulletin, vote
