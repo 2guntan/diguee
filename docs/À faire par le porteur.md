@@ -10,6 +10,32 @@ Chaque section indique : ce qui tourne en attendant, ce qu'il faut faire, et le 
 
 ---
 
+## Au réveil : par où commencer (23/11/2026)
+
+Les tickets #1 à #17 sont développés, testés et poussés sur la branche `claude/intelligent-mayer-4qalur`. Le ticket #18, l'audit avant le lancement, vous revient.
+
+**A. Choix faits en votre absence, à valider ou à corriger.** Le plus simple est de les parcourir dans cet ordre :
+
+1. **Questionnaire** (§2) :
+   - les échelles de Q1 et Q2, et les choix de Q5 (« qui devrait évaluer ? ») sont provisoires ;
+   - pour le critère sexe : « Femme / Homme / Je préfère ne pas répondre » ;
+   - toutes les questions sont obligatoires, et chacune propose « Je ne sais pas ».
+   Tant que Q1, Q2 et Q5 restent provisoires, la mise en production est bloquée. Les valider demande de modifier une ligne de code.
+2. **Espace équipe** (§2.2) : un mot de passe généré par la plateforme s'ajoute au code TOTP.
+3. **Code de secours WhatsApp** (§1.5, ticket #9) : le message « déjà participé » ne s'affiche qu'après un code juste. Sinon, n'importe qui pourrait savoir si un numéro a participé. En contrepartie, un code peut être facturé pour un numéro qui a déjà participé.
+4. **Personnes sans JavaScript** (§1.6) : elles peuvent recevoir un SMS sans captcha, sous un quota très bas (2 par heure et par adresse, 10 par heure pour tout le site).
+5. **Résultats** (§2.3) : arrondi à la dizaine inférieure, case complémentaire marquée « masquée », publication quotidienne qui continue après la clôture.
+6. **Observatoire** (§2.4, §2.5) : l'engagement lui-même est validé à deux, il existe une étape « rejeté », rien n'est modifiable, et les noms du rédacteur et du relecteur sont publics.
+7. **Mise en production** (§1.2) : PostgreSQL sans aucun port réseau, certificats sur le volume chiffré, redémarrage automatique à 04:30 UTC après les mises à jour de sécurité.
+
+**B. Comptes et contenus à fournir** : sections 1 et 2. Le seul développement qui reste avant la mise en ligne est l'**adaptateur du fournisseur SMS**, une fois ce fournisseur choisi (§1.6).
+
+**C. Rien n'a tourné contre les vrais services.** Tout a été testé contre des imitations : KMS d'OVH, stockage d'objets d'OVH, Meta, OpenTimestamps, archive.org, Let's Encrypt (seulement contre Pebble, son serveur d'essai), et systemd sur un vrai VPS. Les premiers essais réels sont décrits à la section 4, « Mise en production pas à pas ».
+
+**D. Fusion dans `main`** : la branche contient tout le travail. Fusionnez-la quand vous le jugerez bon.
+
+---
+
 ## 1. Comptes et services externes
 
 ### 1.1 OVHcloud : KMS pour l'empreinte (tickets #5, #7, #15)
