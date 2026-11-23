@@ -136,7 +136,7 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
 - **Structure** : une structure juridique distincte de l'autre entreprise du porteur existe déjà, avec ses statuts et son NINEA. Elle porte les comptes Meta et SMS. Une association pourra être créée plus tard pour reprendre le projet ; la mention légale du site devra alors être adaptée. Le §5 (« structure en constitution ») est donc dépassé.
 - **Anti-fraude avant l'envoi d'un code** :
   - préfixes acceptés : 70, 75, 76, 77, 78 (liste à confirmer auprès de l'ARTP) ;
-  - captcha Cloudflare Turnstile, vérifié côté serveur ;
+  - captcha ALTCHA, auto-hébergé, vérifié côté serveur (voir ADR 0007) ;
   - par numéro : 3 codes par 24 h, un code valable 10 minutes, 5 essais par code ;
   - par IP : 30 demandes par heure, puis ralentissement et alerte, sans blocage (à cause du CGNAT des opérateurs) ;
   - compteurs en mémoire, sans IP dans les journaux ;
