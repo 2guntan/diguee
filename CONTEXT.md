@@ -30,6 +30,14 @@ _Avoid_ : fin du vote
 Le code à usage unique envoyé au numéro, par WhatsApp en priorité, par SMS en secours, pour vérifier qu'il appartient bien à la personne.
 _Avoid_ : OTP (en dehors du code), mot de passe
 
+**Profil** :
+Les quatre critères déclarés à la fin du questionnaire : région ou diaspora, tranche d'âge, sexe, inscription sur les listes électorales.
+_Avoid_ : identité, données personnelles
+
+**Thème** :
+Un des sujets d'une liste fermée, parmi lesquels le participant choisit ses 3 engagements prioritaires ; il n'y a pas de texte libre.
+_Avoid_ : priorité libre, commentaire
+
 **Réponse** :
 Le contenu d'un questionnaire rempli, avec la région et la tranche d'âge déclarées, sans aucun identifiant de la personne.
 _Avoid_ : bulletin, vote
@@ -54,6 +62,7 @@ _Avoid_ : propriétaire, éditeur
 
 - Une **Participation** et une **Réponse** naissent au même envoi, mais ne sont jamais reliées l'une à l'autre.
 - Une **Réponse** couvre tout le **Questionnaire** et est **définitive** : ni modifiable, ni supprimable par la personne.
+- Une **Réponse** contient un **Profil** et 3 **Thèmes** au plus.
 - Un numéro vérifié produit au plus une **Participation**, repérée par son **Empreinte**.
 - À la **Clôture**, les **Participations** et leurs **Empreintes** sont détruites ; seules les **Réponses** restent.
 
@@ -63,6 +72,8 @@ _Avoid_ : propriétaire, éditeur
 > **Porteur :** « Non. La **Réponse** est définitive, et on ne peut pas la retrouver : c'est justement la garantie d'anonymat. »
 
 ## Flagged ambiguities
+
+- « diaspora » ne désigne que les Sénégalais de l'étranger qui ont un numéro +221 : les autres ne peuvent pas répondre en phase 1.
 
 - « chiffré » était employé pour le numéro : c'est inexact, car on ne peut pas retrouver le numéro à partir de son **Empreinte**. Le terme est corrigé sur le site.
 

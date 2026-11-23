@@ -143,3 +143,6 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
   - coupe-circuit : plafond journalier chez les fournisseurs, et suspension automatique du SMS au-delà de 3 fois le volume horaire moyen ;
   - fermes de SIM : risque accepté, avec la règle « une SIM, une participation » publiée et une surveillance des pics par préfixe ou par région.
 - **Publication** : en dessous de 1 000 réponses, seul le compteur global est affiché. Au-delà, les résultats sont recalculés une fois par jour sur les réponses jusqu'à la veille, et chaque publication est inscrite au journal public. Le compteur suit le même rythme quotidien. La FAQ du site a été corrigée (« mis à jour chaque jour » au lieu de « en continu »).
+- **Profil** : 4 critères (région ou diaspora, tranche d'âge, sexe, inscription sur les listes électorales). Cela corrige le §8, qui ne citait que la région et l'âge. On ne publie jamais plus de deux critères croisés à la fois.
+- **Engagements prioritaires** : une liste fermée d'une dizaine de thèmes, dont on choisit 3, sans texte libre. La liste reste à rédiger avec le porteur ou l'institut de sondage.
+- **Diaspora** : seuls les numéros +221 sont acceptés en phase 1. La méthodologie le précise.
