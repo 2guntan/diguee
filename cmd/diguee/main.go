@@ -38,6 +38,7 @@ import (
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/version"
 	"github.com/2guntan/diguee/internal/web"
+	"github.com/2guntan/diguee/internal/whatsapp"
 )
 
 func main() {
@@ -84,6 +85,10 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	chiffreurTOTP, err := equipe.ConstruireChiffreur(cfg, registre)
+	if err != nil {
+		return err
+	}
+	integrationWhatsApp, err := whatsapp.Construire(cfg, registre)
 	if err != nil {
 		return err
 	}
@@ -169,14 +174,21 @@ func lancer(args []string, journal *slog.Logger) error {
 	tp := tampon.Nouveau(tampon.Options{
 		Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
 	})
+	sessions := session.NouveauMagasin()
+	// Vérification inversée par WhatsApp (ADR 0009) : jetons en mémoire,
+	// webhook de Meta. Ticket #8 : Limiteur (vérifications par empreinte).
+	verificateur, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
+		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+		Prefixes: cfg.PrefixesAutorises, Duree: cfg.JetonDuree, Journal: journal,
+	})
+	if err != nil {
+		return err
+	}
 	srv, err := web.Nouveau(web.Options{
 		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
-		Empreinteur: empreinteur, Tampon: tp, Sessions: session.NouveauMagasin(), Questionnaire: q,
-		Equipe: espaceEquipe,
-		// Seule la vérification factice existe pour l'instant (tickets #6,
-		// #9 et #10 pour les vraies) ; elle n'est jamais servie en production.
-		VerificationFactice: cfg.Env != config.Production,
+		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions, Questionnaire: q,
+		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
 	})
 	if err != nil {
 		return err

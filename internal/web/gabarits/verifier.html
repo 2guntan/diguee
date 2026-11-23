@@ -4,20 +4,13 @@
   <div class="wrap texte">
     <p class="kicker">{{t "parcours.etape.verification"}}</p>
     <h1 class="display">{{t "verif.titre"}}</h1>
-    <p class="alerte">{{t "verif.factice"}}</p>
     <p>{{t "verif.chapeau"}}</p>
-    {{- if .Erreur}}
-    <p class="erreur" role="alert">{{t .Erreur}}</p>
-    {{- end}}
+    <p>{{t "verif.principe"}}</p>
     <form class="formulaire" method="post" action="/verifier">
-      <div class="champ">
-        <label for="numero">{{t "verif.numero"}}</label>
-        <input id="numero" name="numero" type="tel" inputmode="tel" autocomplete="tel" maxlength="24" required>
-        <p class="aide">{{tf "verif.numero.aide" (liste .Config.PrefixesAutorises)}}</p>
-      </div>
       <button class="btn" type="submit">{{t "verif.bouton"}}</button>
     </form>
     <p class="note">{{t "verif.oubli"}}</p>
+    <p class="note">{{t "verif.meta"}}</p>
   </div>
 </section>
 {{end}}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -80,26 +79,30 @@ func TestParcoursAvecKMSOVHEtPanneSansNumeroAuJournal(t *testing.T) {
 	journal := &tamponSur{}
 	racine, arreter := demarrerAvec(t, slog.New(slog.NewJSONHandler(journal, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	// Avec le KMS en panne, le webhook répond 503 (Meta réessaiera) et la
+	// session n'est pas vérifiée.
 	verifier := func(numero string) int {
-		res, err := client.PostForm(racine+"/verifier", url.Values{"numero": {numero}})
-		if err != nil {
-			t.Fatal(err)
+		webhook, res, _ := verifierParWhatsApp(t, client, racine, numero)
+		if webhook == http.StatusOK && res.StatusCode == http.StatusSeeOther && res.Header.Get("Location") == "/questionnaire" {
+			return http.StatusSeeOther
 		}
-		res.Body.Close()
-		return res.StatusCode
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("page du jeton : %d", res.StatusCode)
+		}
+		return webhook
 	}
-	if code := verifier("77 765 43 21"); code != http.StatusSeeOther {
+	if code := verifier("+221 77 765 43 21"); code != http.StatusSeeOther {
 		t.Fatalf("vérification avec le KMS : %d", code)
 	}
 	if d := f.Defauts(); len(d) > 0 {
 		t.Fatalf("requêtes non conformes : %v", d)
 	}
 	f.Regler(fauxkms.Reglage{Statut: 500, Corps: `{"errors":["échec pour {numero}"]}`})
-	if code := verifier("77 765 43 22"); code != http.StatusServiceUnavailable {
+	if code := verifier("+221 77 765 43 22"); code != http.StatusServiceUnavailable {
 		t.Fatalf("KMS en erreur : %d", code)
 	}
 	f.Fermer()
-	if code := verifier("77 765 43 23"); code != http.StatusServiceUnavailable {
+	if code := verifier("+221 77 765 43 23"); code != http.StatusServiceUnavailable {
 		t.Fatalf("KMS arrêté : %d", code)
 	}
 	if err := arreter(); err != nil {

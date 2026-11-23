@@ -83,16 +83,52 @@ func TestPurgeALaCreation(t *testing.T) {
 	}
 }
 
-// La session ne peut contenir que l'empreinte (et l'heure du dernier accès) :
-// aucun champ ne peut garder le numéro une fois l'empreinte calculée (ticket #5).
+// La session ne peut contenir que l'empreinte, l'indicateur « vérifiée » et
+// l'heure du dernier accès : aucun champ ne peut garder le numéro une fois
+// l'empreinte calculée (ticket #5), ni un texte (ticket #6).
 func TestEtatSansNumero(t *testing.T) {
 	typ := reflect.TypeOf(Etat{})
 	for i := range typ.NumField() {
 		f := typ.Field(i)
 		switch f.Type {
-		case reflect.TypeOf(empreinte.Empreinte{}), reflect.TypeOf(time.Time{}):
+		case reflect.TypeOf(empreinte.Empreinte{}), reflect.TypeOf(time.Time{}), reflect.TypeOf(false):
 		default:
 			t.Errorf("champ %s de type %s : la session ne doit contenir que l'empreinte", f.Name, f.Type)
 		}
+	}
+}
+
+func TestOuvrirVerifierRenouveler(t *testing.T) {
+	m := NouveauMagasin()
+	rec := httptest.NewRecorder()
+	id, err := m.Ouvrir(rec, httptest.NewRequest("GET", "/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := rec.Result().Cookies()[0]
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(c)
+	if etat, ok := m.Lire(req); !ok || etat.Verifiee {
+		t.Fatalf("session ouverte : %v %v", ok, etat.Verifiee)
+	}
+	// Une seconde ouverture réutilise la session.
+	if id2, _ := m.Ouvrir(httptest.NewRecorder(), req); id2 != id {
+		t.Error("Ouvrir devrait réutiliser la session existante")
+	}
+	e := empreinte.Empreinte{1, 2, 3}
+	if !m.Verifier(id, e) || m.Verifier("inconnue", e) {
+		t.Fatal("Verifier")
+	}
+	rec = httptest.NewRecorder()
+	if err := m.Renouveler(rec, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Lire(req); ok {
+		t.Error("l'ancien identifiant doit être invalidé")
+	}
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.AddCookie(rec.Result().Cookies()[0])
+	if etat, ok := m.Lire(req2); !ok || !etat.Verifiee || etat.Empreinte != e {
+		t.Error("le nouvel identifiant doit garder l'état vérifié")
 	}
 }

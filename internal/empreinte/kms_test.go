@@ -177,7 +177,7 @@ func TestOVHPannesSansNumero(t *testing.T) {
 func TestModesReelsAdmisEnProduction(t *testing.T) {
 	prod := map[string]string{
 		"DIGUEE_ENV": "production", "DIGUEE_STRUCTURE_NOM": "S", "DIGUEE_STRUCTURE_ADRESSE": "A",
-		"DIGUEE_CONTACT": "c", "DIGUEE_NUMERO_CDP": "n", "DIGUEE_NUMERO_WHATSAPP": "w",
+		"DIGUEE_CONTACT": "c", "DIGUEE_NUMERO_CDP": "n", "DIGUEE_NUMERO_WHATSAPP": "+221700000000",
 		"DIGUEE_OUVERTURE": "2027-01-15", "DIGUEE_CLE_TOTP": strings.Repeat("ab", 32),
 	}
 	for nom, env := range map[string]map[string]string{

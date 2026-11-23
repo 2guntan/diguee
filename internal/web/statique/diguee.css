@@ -105,3 +105,8 @@ footer .links div{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:flex-
 .champ input[type=text],.champ input[type=password]{font:inherit;font-size:18px;padding:10px 14px;border:1px solid var(--ink);border-radius:6px;max-width:420px}
 form.en-ligne{display:inline;margin:0}
 button.lien{background:none;border:0;padding:0;font:inherit;font-size:15px;color:var(--ink);cursor:pointer;text-decoration:underline}
+/* Vérification inversée : jeton et QR code (affiché sur grand écran avec souris) */
+.jeton{font-family:"Bricolage Grotesque",Inter,sans-serif;font-weight:800;font-size:clamp(30px,6vw,44px);letter-spacing:.02em;margin:8px 0;padding:12px 16px;border:2px dashed var(--ink);border-radius:6px;display:inline-block;user-select:all}
+.qr{display:none;margin:24px 0}
+.qr svg{width:232px;height:232px;display:block}
+@media (min-width:900px) and (hover:hover) and (pointer:fine){.qr{display:block}}

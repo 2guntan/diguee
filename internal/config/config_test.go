@@ -122,3 +122,58 @@ func TestCleTOTP(t *testing.T) {
 		}
 	}
 }
+
+func TestWhatsApp(t *testing.T) {
+	c, err := Charger(env(minimal()))
+	if err != nil || c.WhatsApp != "fake" || c.JetonDuree != 10*time.Minute {
+		t.Fatalf("défaut : %v %q", err, c.WhatsApp)
+	}
+	m := minimal()
+	m["DIGUEE_WHATSAPP"] = "meta"
+	m["DIGUEE_META_SECRET_APP"] = "court"
+	_, err = Charger(env(m))
+	for _, attendu := range []string{"DIGUEE_META_ID_NUMERO est obligatoire", "DIGUEE_META_SECRET_APP est trop court", "DIGUEE_META_JETON_WEBHOOK est obligatoire"} {
+		if err == nil || !strings.Contains(err.Error(), attendu) {
+			t.Errorf("erreur attendue %q : %v", attendu, err)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "court\"") {
+		t.Error("le message d'erreur ne doit pas citer le secret")
+	}
+	m["DIGUEE_META_ID_NUMERO"] = "106540352242922"
+	m["DIGUEE_META_SECRET_APP"] = "0123456789abcdef0123456789abcdef"
+	m["DIGUEE_META_JETON_WEBHOOK"] = "jeton-de-verification-du-webhook"
+	c, err = Charger(env(m))
+	if err != nil || c.Meta.IDNumero != "106540352242922" {
+		t.Fatalf("meta : %v", err)
+	}
+	m["DIGUEE_WHATSAPP"] = "bot"
+	if _, err := Charger(env(m)); err == nil {
+		t.Error("mode inconnu accepté")
+	}
+}
+
+func TestNumeroWhatsApp(t *testing.T) {
+	for saisie, attendu := range map[string]string{"+221 77 123 45 67": "221771234567", "221771234567": "221771234567"} {
+		m := minimal()
+		m["DIGUEE_NUMERO_WHATSAPP"] = saisie
+		c, err := Charger(env(m))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := c.NumeroWhatsAppChiffres(); got != attendu {
+			t.Errorf("%q : %q", saisie, got)
+		}
+	}
+	for _, saisie := range []string{"00221771234567", "+221-77", "wa.me/221771234567", "1234"} {
+		m := minimal()
+		m["DIGUEE_NUMERO_WHATSAPP"] = saisie
+		if _, err := Charger(env(m)); err == nil || !strings.Contains(err.Error(), "DIGUEE_NUMERO_WHATSAPP") {
+			t.Errorf("%q devrait être refusé : %v", saisie, err)
+		}
+	}
+	c, _ := Charger(env(minimal()))
+	if _, err := c.NumeroWhatsAppChiffres(); err == nil {
+		t.Error("« À COMPLÉTER » n'est pas un numéro")
+	}
+}

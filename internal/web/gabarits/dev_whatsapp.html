@@ -1,0 +1,24 @@
+{{define "titre"}}{{t "dev.whatsapp.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "dev.whatsapp.titre"}}</h1>
+    <p class="alerte">{{t "dev.whatsapp.avertissement"}}</p>
+    {{- if .StatutDev}}
+    <p role="status">{{tf "dev.whatsapp.resultat" .StatutDev}} <a href="/verifier/whatsapp">{{t "dev.whatsapp.retour"}}</a></p>
+    {{- end}}
+    <form class="formulaire" method="post" action="/dev/whatsapp">
+      <div class="champ">
+        <label for="numero">{{t "dev.whatsapp.numero"}}</label>
+        <input id="numero" name="numero" type="tel" inputmode="tel" autocomplete="off" maxlength="24" required>
+        <p class="aide">{{t "dev.whatsapp.numero.aide"}}</p>
+      </div>
+      <div class="champ">
+        <label for="texte">{{t "dev.whatsapp.texte"}}</label>
+        <input id="texte" name="texte" type="text" maxlength="200" value="{{.Jeton}}" required>
+      </div>
+      <button class="btn" type="submit">{{t "dev.whatsapp.envoyer"}}</button>
+    </form>
+  </div>
+</section>
+{{end}}

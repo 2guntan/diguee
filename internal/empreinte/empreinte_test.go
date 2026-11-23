@@ -106,7 +106,7 @@ func charger(t *testing.T, m map[string]string) *config.Config {
 func TestEmpreinteurFauxInterditEnProduction(t *testing.T) {
 	c := charger(t, map[string]string{
 		"DIGUEE_ENV": "production", "DIGUEE_STRUCTURE_NOM": "S", "DIGUEE_STRUCTURE_ADRESSE": "A",
-		"DIGUEE_CONTACT": "c", "DIGUEE_NUMERO_CDP": "n", "DIGUEE_NUMERO_WHATSAPP": "w",
+		"DIGUEE_CONTACT": "c", "DIGUEE_NUMERO_CDP": "n", "DIGUEE_NUMERO_WHATSAPP": "+221700000000",
 		"DIGUEE_OUVERTURE": "2027-01-15",
 	})
 	var r integration.Registre

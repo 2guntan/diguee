@@ -1,0 +1,35 @@
+{{define "titre"}}{{t "verif.whatsapp.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <p class="kicker">{{t "parcours.etape.verification"}}</p>
+    <h1 class="display">{{t "verif.whatsapp.titre"}}</h1>
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
+    {{- if .Jeton}}
+    <p>{{t "verif.whatsapp.consigne"}}</p>
+    <p class="jeton">{{.Jeton}}</p>
+    <p>{{tf "verif.whatsapp.numero" .Config.NumeroWhatsApp.Valeur}}</p>
+    <p><a class="btn" href="{{.LienWaMe}}">{{t "verif.whatsapp.bouton"}}</a></p>
+    {{- if .QR}}
+    <figure class="qr">
+      {{.QR}}
+      <figcaption class="aide">{{t "verif.whatsapp.qr"}}</figcaption>
+    </figure>
+    {{- end}}
+    <p class="aide">{{tf "verif.whatsapp.validite" (duree .Config.JetonDuree)}}</p>
+    <form class="formulaire" method="post" action="/verifier/whatsapp">
+      <button class="btn secondaire" type="submit">{{t "verif.whatsapp.envoye"}}</button>
+    </form>
+    <p class="note">{{t "verif.whatsapp.silence"}}</p>
+    {{- end}}
+    <form class="formulaire" method="post" action="/verifier">
+      <button class="btn{{if .Jeton}} secondaire{{end}}" type="submit">{{t "verif.whatsapp.nouveau"}}</button>
+    </form>
+    {{- if .Simulation}}
+    <p class="alerte"><a href="/dev/whatsapp">{{t "verif.whatsapp.simulation"}}</a></p>
+    {{- end}}
+  </div>
+</section>
+{{end}}

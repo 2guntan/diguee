@@ -12,7 +12,7 @@ Chaque section indique : ce qui tourne en attendant, ce qu'il faut faire, et le 
 
 ### 1.1 OVHcloud : KMS pour l'empreinte (tickets #5, #7, #15)
 
-- **En attendant** : `DIGUEE_EMPREINTEUR=fake` (valeur par défaut), un HMAC-SHA-256 calculé avec une clé de développement écrite dans le code (`internal/empreinte`, type `HMACLocal`). Il est déclaré `fake` dans le registre des intégrations : le serveur refuse donc de démarrer en production. La vérification du numéro est elle aussi factice : en développement seulement, la page `/verifier` accepte tout numéro +221 valide sans rien envoyer (les vrais parcours arrivent aux tickets #6, #9 et #10).
+- **En attendant** : `DIGUEE_EMPREINTEUR=fake` (valeur par défaut), un HMAC-SHA-256 calculé avec une clé de développement écrite dans le code (`internal/empreinte`, type `HMACLocal`). Il est déclaré `fake` dans le registre des intégrations : le serveur refuse donc de démarrer en production. La vérification du numéro passe par la vérification inversée (ticket #6), simulée en développement (§1.5).
 - **Déjà prêt (ticket #5)** : l'implémentation `DIGUEE_EMPREINTEUR=ovh` (signature **RS256** par le KMS, puis SHA-256 de la signature ; PS256 n'est pas réglable), testée contre un faux KMS qui imite l'API d'OVHcloud. Il ne manque que le test sur un vrai compte (étape 6 ci-dessous).
 - **À faire** :
   1. Créer le compte OVHcloud **réservé à Diguee**, avec la double authentification.
@@ -68,14 +68,35 @@ Chaque section indique : ce qui tourne en attendant, ce qu'il faut faire, et le 
 
 ### 1.5 Meta : WhatsApp Business (tickets #6, #9)
 
-- **En attendant** : `DIGUEE_WHATSAPP=fake`. Une page de développement simule l'envoi du message par le citoyen (vérification inversée), et les codes de secours sont affichés dans la console. Ce mode est interdit en production.
+- **En attendant** : `DIGUEE_WHATSAPP=fake` (valeur par défaut). Le webhook vérifie les signatures avec un secret de développement écrit dans le code, et la page de développement `/dev/whatsapp` simule l'envoi du message par le citoyen : elle fabrique la notification au format de Meta, la signe et la remet au vrai webhook (un lien y mène depuis la page du jeton). Ce mode est déclaré `fake` dans le registre des intégrations : le serveur refuse de démarrer en production. Les codes de secours (ticket #9) seront affichés dans la console.
+- **Déjà prêt (ticket #6)** : la vérification inversée complète en mode `meta` (webhook `https://consultation.diguee.sn/webhook/whatsapp`, poignée de main, signature `X-Hub-Signature-256`). Il ne manque que les accès ci-dessous et un essai avec un vrai téléphone.
 - **À faire** :
-  1. Créer le portefeuille business Meta et l'application WhatsApp, avec la vérification de l'entreprise.
-  2. Obtenir le **numéro WhatsApp de Diguee**.
-  3. Faire approuver un modèle de message d'**authentification** pour le code de secours.
-  4. Déclarer l'adresse du webhook (`https://consultation.diguee.sn/webhook/whatsapp`) avec un jeton de vérification.
-- **Réglage** : `DIGUEE_WHATSAPP=meta`, avec l'identifiant du numéro, le jeton d'accès, le secret de l'application (qui sert à vérifier les signatures), le jeton de vérification du webhook et le nom du modèle.
-- **À vérifier** : le tarif réel pour le Sénégal dans votre gestionnaire WhatsApp.
+  1. Créer le portefeuille business Meta (*Meta Business Suite*, `business.facebook.com`) au nom de la structure qui porte Diguee (ADR 0005), puis demander la **vérification de l'entreprise** (documents de la structure).
+  2. Sur `developers.facebook.com`, créer une application de type **Business**, lui ajouter le produit **WhatsApp** et la rattacher à ce portefeuille.
+  3. Ajouter le **numéro WhatsApp de Diguee** à l'API Cloud (WhatsApp → *API Setup* ou le gestionnaire WhatsApp), avec son nom d'affichage « Diguee ». Ce numéro ne doit pas être déjà utilisé dans l'application WhatsApp ou WhatsApp Business d'un téléphone. Noter :
+     - le numéro lui-même, au format international → `DIGUEE_NUMERO_WHATSAPP` (par exemple `+221 77 123 45 67`) ; c'est lui que le lien `wa.me` et le QR code ouvrent ;
+     - son **identifiant** (*Phone number ID*, une suite de chiffres, différent du numéro) → `DIGUEE_META_ID_NUMERO`. Les notifications d'un autre numéro sont ignorées.
+  4. Dans *Paramètres de l'application → Paramètres de base*, afficher la **clé secrète de l'application** (*App secret*) → `DIGUEE_META_SECRET_APP`. Elle sert à vérifier que chaque notification vient bien de Meta.
+  5. Choisir **vous-même** le jeton de vérification du webhook, sur le serveur : `openssl rand -hex 32` → `DIGUEE_META_JETON_WEBHOOK`.
+  6. Mettre ces valeurs dans le fichier d'environnement de systemd (jamais dans le dépôt ni par messagerie), avec `DIGUEE_WHATSAPP=meta`, et redémarrer le service **avant** l'étape suivante : Meta appelle le webhook dès qu'on l'enregistre.
+  7. Dans l'application, WhatsApp → *Configuration* → *Webhook* : URL de rappel `https://consultation.diguee.sn/webhook/whatsapp`, jeton de vérification = la valeur de l'étape 5, puis « Vérifier et enregistrer ». Ensuite, dans *Champs du webhook*, **s'abonner au champ `messages`** (et à lui seul).
+  8. Passer l'application en mode **Live** (publiée). En mode développement, Meta n'envoie les notifications que pour les numéros de test.
+  9. **Ne configurer aucune réponse automatique** (message d'accueil, d'absence) : Diguee ne répond jamais dans WhatsApp (spec §5.1). Le profil WhatsApp Business peut porter le nom de la structure, son adresse et un lien vers la politique de confidentialité.
+  10. Essai : ouvrir `https://consultation.diguee.sn/verifier` sur un téléphone, envoyer le message prérempli ; la page doit passer au questionnaire en quelques secondes. Sur ordinateur, scanner le QR code. Un message envoyé depuis un numéro étranger doit être refusé.
+  11. Pour le ticket #9 (code de secours) : faire approuver un modèle de message d'**authentification**, et créer un **jeton d'accès** permanent d'utilisateur système limité à ce compte WhatsApp. Ces réglages seront ajoutés par le ticket #9.
+- **Réglage** : `DIGUEE_WHATSAPP=meta`, `DIGUEE_NUMERO_WHATSAPP`, `DIGUEE_META_ID_NUMERO`, `DIGUEE_META_SECRET_APP` (secret, 16 caractères au moins), `DIGUEE_META_JETON_WEBHOOK` (secret, 16 caractères au moins). `DIGUEE_JETON_DUREE` (10 minutes) et `DIGUEE_PREFIXES_AUTORISES` s'appliquent aussi.
+- **Si le secret de l'application fuit** : le régénérer chez Meta (*Paramètres de base*), mettre à jour `DIGUEE_META_SECRET_APP` et redémarrer ; une notification signée avec l'ancien secret est rejetée (401).
+- **À vérifier** : le tarif réel pour le Sénégal dans votre gestionnaire WhatsApp (les messages reçus par Diguee ouvrent une conversation de service, gratuite selon la grille en vigueur à la rédaction, à confirmer), et la déclaration à la CDP du transfert à Meta (numéro et heure du message, ADR 0004).
+
+#### Points à valider (ticket #6)
+
+- **Jeton** : 4 chiffres (2 à 9) et 2 lettres sans caractères ambigus, soit 1,3 million de jetons. Un jeton deviné ne servirait à rien : il ferait vérifier le numéro de celui qui l'envoie, pas celui de la personne qui l'a demandé.
+- **Mobile ou ordinateur** : le bouton `wa.me` s'affiche partout, le QR code seulement sur grand écran avec souris (règle CSS), sans lire l'agent utilisateur.
+- **Interrogation** : la seule page avec un script (`/statique/verifier.js`, quelques lignes, servi par Diguee) est celle du jeton ; sa CSP est la seule à autoriser `script-src 'self'`. Sans JavaScript, le bouton « J'ai envoyé le message » suffit.
+- **Numéro refusé** : un message reçu d'un numéro hors +221 ou d'un préfixe non autorisé consomme le jeton ; la page l'explique et propose un nouveau message.
+- **Second expéditeur** : seul le premier compte ; l'incident est compté (`whatsapp.Metriques`) et journalisé sans aucune donnée. L'exposition des métriques (page de supervision, alertes) reste à faire, avec la surveillance de la spec §7.
+- **Redémarrage** : les jetons sont en mémoire ; un redémarrage les invalide, comme les sessions.
+- **Captcha et limite par numéro** : pas encore actifs (ticket #8) ; les points d'accroche sont posés.
 
 ### 1.6 Fournisseur SMS (ticket #10)
 
@@ -96,14 +117,14 @@ Ces valeurs sont « À COMPLÉTER » dans la configuration. Elles s'affichent co
 
 | Élément | Réglage | Où il apparaît | Ticket |
 |---|---|---|---|
-| Nom et adresse de la structure (responsable du traitement) | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | Politique de confidentialité, premier message WhatsApp | #1, #6 |
+| Nom et adresse de la structure (responsable du traitement) | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | Politique de confidentialité ; profil WhatsApp Business (§1.5, Diguee n'envoie aucun message) | #1, #6 |
 | Numéro CDP | `DIGUEE_NUMERO_CDP` | Politique de confidentialité, pied de page | #1 |
 | Adresse de contact (droits d'accès et d'opposition) | `DIGUEE_CONTACT` | Politique de confidentialité | #1 |
 | Date d'ouverture (la clôture tombe 6 mois plus tard) | `DIGUEE_OUVERTURE` (format `AAAA-MM-JJ` ; `DIGUEE_CLOTURE` est calculée, mais peut être fixée) | Accueil, méthodologie, clôture | #1, #16 |
 | Échelles de réponse de Q1 et Q2. **Provisoire** : les propositions de la spec §3, Q1 « Toujours / Souvent / Rarement / Jamais / Je ne sais pas », Q2 « Oui, toujours / Oui, pour les engagements graves / Non / Je ne sais pas » | libellés : clés `questionnaire.q1.choix.*` et `questionnaire.q2.choix.*` de `internal/i18n/catalogues/fr.json` ; nombre de choix et marque `Provisoire` : `internal/questionnaire/v1.go` | Questionnaire, récapitulatif | #2 |
 | Choix de réponse de Q5 (« qui devrait évaluer »). **Provisoire**, proposé par le développement : « Une autorité indépendante / Le Conseil constitutionnel / L'Assemblée nationale / Un panel de citoyens tirés au sort / Je ne sais pas » | clés `questionnaire.q5.choix.*` du catalogue `fr` ; nombre de choix et marque `Provisoire` : `internal/questionnaire/v1.go` | Questionnaire, récapitulatif | #2 |
 | Choix du critère « sexe » du profil (la spec ne les fixe pas) : « Femme / Homme / Je préfère ne pas répondre », à confirmer | clés `profil.sexe.choix.*` du catalogue `fr` | Questionnaire | #2 |
-| Numéro WhatsApp de Diguee | `DIGUEE_NUMERO_WHATSAPP` | Vérification inversée (lien `wa.me`) | #1, #6 |
+| Numéro WhatsApp de Diguee, au format international (`+221 77 123 45 67`) | `DIGUEE_NUMERO_WHATSAPP` | Vérification inversée (numéro affiché, lien `wa.me` et QR code) | #1, #6 |
 | Liste définitive des préfixes mobiles (ARTP) | `DIGUEE_PREFIXES_AUTORISES` (défaut provisoire `70,75,76,77,78`) | Vérification | #6 |
 | Traductions en wolof et en pulaar | `internal/i18n/catalogues/wo.json` et `ff.json` ; une langue n'est proposée qu'une fois son catalogue complet | Catalogues `wo` et `ff` | #1 |
 | Composition de la population (ANSD) par région, âge et sexe | à définir (ticket #11) | Page des résultats | #11 |
@@ -113,7 +134,7 @@ Ces valeurs sont « À COMPLÉTER » dans la configuration. Elles s'affichent co
 
 Valeurs qui ont un défaut tiré de la spec, à confirmer si besoin : `DIGUEE_ALTCHA_DIFFICULTE` (100000, provisoire jusqu'au ticket #8) et les seuils du §13 (`DIGUEE_SEUIL_PUBLICATION`, `DIGUEE_SEUIL_CASE`, etc.).
 
-Secrets à fournir en production : `DIGUEE_POSTGRES_URL`, l'adresse de la base avec son mot de passe (ticket #7), et `DIGUEE_CLE_TOTP` (§1.7), à mettre dans le fichier d'environnement de systemd, jamais dans le dépôt.
+Secrets à fournir en production : `DIGUEE_POSTGRES_URL`, l'adresse de la base avec son mot de passe (ticket #7), `DIGUEE_CLE_TOTP` (§1.7), `DIGUEE_META_SECRET_APP` et `DIGUEE_META_JETON_WEBHOOK` (§1.5), à mettre dans le fichier d'environnement de systemd, jamais dans le dépôt.
 
 ### 2.1 Journal public (ticket #3) : points à valider
 
@@ -125,7 +146,7 @@ Secrets à fournir en production : `DIGUEE_POSTGRES_URL`, l'adresse de la base a
 ### 2.2 Espace équipe (ticket #4) : points à valider
 
 - **Mot de passe en plus du TOTP** : le ticket demande un TOTP « au minimum ». Un code de 6 chiffres seul resterait devinable à la longue, même avec la limitation des échecs : la connexion demande donc aussi un mot de passe. Il est **tiré par la plateforme** (20 signes, 100 bits), affiché une seule fois avec le secret TOTP, et seule son empreinte PBKDF2-SHA-256 est gardée. Aucun membre ne choisit ni ne change son mot de passe : en cas d'oubli ou de perte du téléphone, un administrateur « réinitialise l'accès ».
-- **Pas de QR code** : il faudrait du JavaScript ou un générateur de QR code écrit dans le dépôt. Le secret est affiché en base32 (saisie manuelle dans l'application) et l'URI `otpauth://` peut être transformée en QR code **hors ligne** (jamais par un site web, qui verrait le secret).
+- **Pas de QR code** : il faudrait du JavaScript ou un générateur de QR code écrit dans le dépôt (le ticket #6 en a ajouté un, `internal/qr`, qui pourrait servir plus tard à l'enrôlement TOTP). Le secret est affiché en base32 (saisie manuelle dans l'application) et l'URI `otpauth://` peut être transformée en QR code **hors ligne** (jamais par un site web, qui verrait le secret).
 - **WebAuthn (clé de sécurité)** : hors périmètre de ce ticket, comme le permet la spec (« TOTP au minimum »). À ajouter plus tard si vous le souhaitez (une bibliothèque WebAuthn est autorisée par la spec §11).
 - **Sessions et anti-rejeu en mémoire** : aucune colonne plus fine que le jour en base (même règle que T1). Un redémarrage du serveur ferme donc toutes les sessions et, juste après, il faut attendre le code TOTP suivant (30 secondes au plus) pour se connecter.
 - **Limites des échecs** (constantes du code, `internal/equipe/service.go`) : 5 échecs par identifiant en 15 minutes, 20 échecs par adresse en une heure, comptés en mémoire. Un tiers qui connaît un identifiant peut donc bloquer ce compte pendant 15 minutes.
@@ -164,3 +185,4 @@ Mis à jour à la fin de chaque ticket : ce qui est fait, et les éventuelles va
 | #3 | fait | Journal public chaîné (SHA-256 du JSON canonique RFC 8785), en ajout seul jusque dans la base (déclencheurs : `UPDATE`, `DELETE`, `TRUNCATE` refusés, insertion hors chaîne refusée), page `/journal` paginée et export `/journal.json`, commande `diguee verifier-journal <fichier|url>` (options `-attendu` et `-precedent`), API d'écriture pour les tickets suivants, entrée « mise en production » automatique au démarrage sur une nouvelle version. Aucune fausse implémentation ni valeur provisoire ajoutée ; points à valider en §2.1. |
 | #4 | fait | Espace équipe `/equipe` séparé des pages publiques : comptes nominatifs, rôles cumulables rédacteur / relecteur / administrateur, connexion par identifiant + mot de passe tiré par la plateforme + TOTP (RFC 6238 écrit dans le dépôt, anti-rejeu ; jamais de SMS ; WebAuthn hors périmètre), secret TOTP chiffré (AES-256-GCM), sessions de 8 h en mémoire, CSRF, échecs limités, aucune IP journalisée, administration des comptes réservée aux administrateurs (création, rôles, réinitialisation, désactivation qui ferme les sessions), audit interne `audit_equipe` en ajout seul, commande `diguee creer-membre` (§3.1). Fausse implémentation ajoutée : clé de développement des secrets TOTP (`DIGUEE_CLE_TOTP` absente, §1.7). Points à valider en §2.2. |
 | #5 | fait | Empreinte par le KMS d'OVHcloud (`DIGUEE_EMPREINTEUR=ovh`) : signature RS256 (RSASSA-PKCS1-v1_5, seul algorithme possible, PS256 non réglable) du numéro normalisé, puis SHA-256 ; client HTTPS minimal en bibliothèque standard, authentification par certificat client (mTLS), sans mandataire ni nouvel essai. Repli Google Cloud KMS (`DIGUEE_EMPREINTEUR=gcp`, HMAC natif `macSign`, jeton lu dans un fichier) écrit et testé contre un faux serveur, exploitation à finaliser (§1.1). Test de démarrage renforcé (T5) : deux signatures identiques d'une valeur de contrôle, deux valeurs différentes, KMS joignable, sinon refus de démarrer. Erreurs du KMS sans le numéro (masqué même s'il est renvoyé par le KMS), testé avec un faux KMS TLS (4xx, 5xx, délais, réseau, réponses mal formées). Variables ajoutées : `DIGUEE_OVH_KMS_POINT_ACCES`, `DIGUEE_OVH_KMS_ID`, `DIGUEE_OVH_KMS_CLE_ID`, `DIGUEE_OVH_KMS_CERTIFICAT`, `DIGUEE_OVH_KMS_CLE_CLIENT`, `DIGUEE_OVH_KMS_AC`, `DIGUEE_GCP_KMS_*`, `DIGUEE_KMS_DELAI`. **Reste** : le test réel sur le compte OVHcloud (§1.1, étape 6). Aucune nouvelle fausse implémentation ; `fake` reste le défaut tant que le compte n'existe pas. |
+| #6 | fait | Vérification inversée par WhatsApp, parcours principal (la vérification factice du ticket #2 est retirée) : jeton « DIGUEE 4821-KX » aléatoire (`crypto/rand`), 10 minutes, usage unique, lié à la session, en mémoire ; page du jeton avec bouton `wa.me` et QR code SVG calculé par le serveur (encodeur écrit dans le dépôt, `internal/qr`) ; webhook `/webhook/whatsapp` (signature `X-Hub-Signature-256` à temps constant, poignée de main, 200 pour les notifications sans rapport, 503 et nouvel essai si le KMS ou la base échoue) ; contrôle +221 et préfixes ; empreinte, doublons (« Ce numéro a déjà participé. Merci ! ») ; second expéditeur ignoré et compté ; détection par interrogation toutes les 3 s (seul script du site, CSP propre à cette page) et par le bouton « J'ai envoyé le message » ; identifiant de session renouvelé au passage au questionnaire ; aucune réponse dans WhatsApp, ni numéro, ni jeton, ni corps dans les journaux. Fausse implémentation ajoutée : `DIGUEE_WHATSAPP=fake` (secret de développement et page `/dev/whatsapp`, §1.5). Variables ajoutées : `DIGUEE_WHATSAPP`, `DIGUEE_META_ID_NUMERO`, `DIGUEE_META_SECRET_APP`, `DIGUEE_META_JETON_WEBHOOK` ; `DIGUEE_NUMERO_WHATSAPP` doit désormais être un numéro international. Points à valider en §1.5. |

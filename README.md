@@ -18,13 +18,15 @@ Site : https://diguee.sn · Contact : @digueeboorla
 | `internal/empreinte` | Normalisation des numéros +221 et interface `Empreinteur` : `ovh` (KMS d'OVHcloud, signature RS256 puis SHA-256, mTLS), `gcp` (repli Google Cloud KMS, HMAC natif) et `fake` (HMAC à clé locale, développement) ; `fauxkms` : faux serveurs KMS pour les tests |
 | `internal/questionnaire` | Questionnaire versionné (Q1 à Q8, profil, « 18 ans ou plus ») : codes stockés et clés du catalogue |
 | `internal/tampon` | Tampon mélangé (ADR 0003) : écriture groupée à 20 envois, à 30 minutes et à l'arrêt, doublons refusés |
-| `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` |
+| `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` ; ouvertes avant la vérification, puis marquées vérifiées avec l'empreinte, identifiant renouvelé au passage au questionnaire |
+| `internal/whatsapp` | Vérification inversée (spec §5.1, ADR 0009) : jetons « DIGUEE 4821-KX » en mémoire (aléatoires, 10 minutes, usage unique, liés à la session), webhook de l'API Cloud de Meta (`X-Hub-Signature-256`, poignée de main `hub.*`), métriques agrégées ; intégration `DIGUEE_WHATSAPP` : `fake` (secret de développement, simulation) ou `meta` |
+| `internal/qr` | Encodeur de QR code écrit dans le dépôt (ISO/IEC 18004, mode octet, correction M, versions 1 à 10), rendu SVG dans la page : le lien `wa.me` sur ordinateur, sans JavaScript ni service tiers |
 | `internal/totp` | TOTP (RFC 6238, au-dessus de HOTP, RFC 4226) : SHA-1, 6 chiffres, 30 secondes, tolérance d'un pas, anti-rejeu ; bibliothèque standard seulement |
 | `internal/equipe` | Espace équipe `/equipe` (spec §9, ADR 0008) : comptes nominatifs, rôles cumulables, connexion mot de passe + TOTP, sessions de 8 h, CSRF, limitation des échecs, chiffrement des secrets TOTP (AES-256-GCM), audit interne ; `Espace.Gerer` et `MembreDe` pour les pages suivantes (ticket #13) |
 | `internal/base` | PostgreSQL : connexion, migrations (`migrations/NNNN_nom.sql`), requêtes (dont les comptes de l'équipe et leur audit) ; `basetest` pour les tests |
 | `internal/journal` | Journal public (ADR 0010) : entrées chaînées par SHA-256 sur le JSON canonique (RFC 8785, entiers seulement), API d'écriture `Inscrire` / `InscrireMiseEnProduction`, export JSON et vérification de la chaîne ; `journaltest` : magasin en mémoire pour les tests |
 | `internal/i18n` | Catalogues de textes : `fr` livré, `wo` et `ff` prévus |
-| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité, journal public `/journal` et son export `/journal.json`), feuille de style et polices auto-hébergées ; monte l'espace équipe sous `/equipe` |
+| `internal/web` | Pages `html/template` sans JavaScript, sauf un petit script d'interrogation sur la page du jeton (accueil, parcours de réponse avec la vérification inversée et le webhook `/webhook/whatsapp`, méthodologie, confidentialité, journal public `/journal` et son export `/journal.json`), feuille de style et polices auto-hébergées ; monte l'espace équipe sous `/equipe` |
 | `internal/version` | Version et SHA-256 de l'exécutable, affichés au pied de page et inscrits au journal public à chaque mise en production |
 | `docs/` | Spécification, ADR, et [ce que le porteur doit fournir](docs/À%20faire%20par%20le%20porteur.md) |
 
@@ -41,8 +43,10 @@ export DIGUEE_POSTGRES_URL='postgres://localhost/diguee?sslmode=disable'
 make lancer
 
 # Pour essayer le parcours de réponse en local, la consultation doit être ouverte :
-# DIGUEE_OUVERTURE=2026-11-01 make lancer. La vérification du numéro est alors
-# factice (aucun message envoyé) ; elle n'existe pas en production.
+# DIGUEE_OUVERTURE=2026-11-01 make lancer. Avec DIGUEE_WHATSAPP=fake (défaut), la
+# page du jeton propose un lien vers /dev/whatsapp, qui simule le message
+# WhatsApp du citoyen : la notification est signée avec le secret de
+# développement et remise au vrai webhook. Ce mode est interdit en production.
 
 # Tests (ceux qui demandent PostgreSQL sont sautés sans DIGUEE_TEST_POSTGRES_URL ;
 # le test T1/T2 lance pg_dump, version 16, cherché dans le PATH ou dans DIGUEE_TEST_PG_DUMP)
@@ -53,9 +57,22 @@ go vet ./... && go test ./...
 make verifier-build
 ```
 
-Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`), comme l'unique entrée « mise en production » sur plusieurs redémarrages. T11 (modification d'une entrée ancienne détectée) est testé dans `internal/journal` et sur la commande `verifier-journal` ; le refus d'`UPDATE`/`DELETE` en SQL dans `internal/base/journal_test.go`. Les tests de l'espace équipe (`internal/equipe/espace_test.go`) passent par le serveur web complet : connexion refusée sans TOTP valide ou avec un code déjà utilisé, compte désactivé et sessions fermées, pages refusées sans session ou sans le bon rôle, CSRF, échecs limités, ni IP ni secret dans les journaux et la base ; les vecteurs des RFC 4226 et 6238 sont dans `internal/totp`. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
+Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, chacun vérifié par un faux webhook signé, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`), comme l'unique entrée « mise en production » sur plusieurs redémarrages. T11 (modification d'une entrée ancienne détectée) est testé dans `internal/journal` et sur la commande `verifier-journal` ; le refus d'`UPDATE`/`DELETE` en SQL dans `internal/base/journal_test.go`. Les tests de l'espace équipe (`internal/equipe/espace_test.go`) passent par le serveur web complet : connexion refusée sans TOTP valide ou avec un code déjà utilisé, compte désactivé et sessions fermées, pages refusées sans session ou sans le bon rôle, CSRF, échecs limités, ni IP ni secret dans les journaux et la base ; les vecteurs des RFC 4226 et 6238 sont dans `internal/totp`. La vérification inversée (`internal/web/whatsapp_test.go`, `internal/whatsapp`) : signature invalide rejetée (T6), poignée de main, jeton expiré, révoqué ou déjà utilisé sans effet, second expéditeur ignoré et compté, expéditeur hors +221 ou préfixe non autorisé refusé, détection par interrogation et par le bouton, notifications sans rapport acceptées (200), page de simulation absente en mode `meta`, ni numéro ni jeton ni corps dans les journaux. Le QR code (`internal/qr`) est testé sur les tables de la norme (format, version), un vecteur Reed-Solomon connu, deux matrices de référence et une relecture complète (motifs fixes, format, correction) ; les matrices ont été lues par un décodeur indépendant (zxing-cpp) hors du dépôt. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
 
 Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`, `diguee creer-membre` (espace équipe, ci-dessous) et `diguee verifier-journal` (ci-dessous).
+
+### Vérification inversée par WhatsApp
+
+Parcours principal de la vérification (spec §5.1, ADR 0009) ; la vérification factice du ticket #2 est retirée.
+
+1. `GET /verifier` explique le principe ; le bouton (`POST /verifier`) ouvre une session non vérifiée et tire un jeton « DIGUEE 4821-KX » (4 chiffres de 2 à 9, 2 lettres sans B, G, I, L, O, Q, S, Z ; `crypto/rand`), valable `DIGUEE_JETON_DUREE`, à usage unique, gardé en mémoire avec l'identifiant de la session. Un nouveau jeton révoque le précédent.
+2. `GET /verifier/whatsapp` affiche le jeton, le numéro de Diguee, le bouton `https://wa.me/<numéro>?text=<jeton>` et, sur grand écran avec souris (CSS seulement), le même lien en QR code SVG calculé par le serveur.
+3. `POST /webhook/whatsapp` : signature `X-Hub-Signature-256` (HMAC-SHA-256 du corps brut, comparaison à temps constant) vérifiée avant toute lecture, sinon 401 ; seules les notifications `messages` du numéro `DIGUEE_META_ID_NUMERO` et les messages texte sont lus ; jeton retrouvé dans le texte (casse, espaces et tiret tolérés) ; expéditeur (`from`) contrôlé par `empreinte.Normaliser` (+221, préfixes autorisés) ; empreinte calculée, puis comparée à la base et au tampon ; session marquée vérifiée. Le reste (statuts, autres types, jetons inconnus ou expirés) reçoit 200. Si le KMS ou la base échoue, le webhook répond 503, le jeton reste utilisable et Meta réessaie. `GET /webhook/whatsapp` répond à la poignée de main (`hub.mode=subscribe`, `hub.verify_token`, `hub.challenge`).
+4. La page constate l'issue par `GET /verifier/etat` toutes les 3 secondes (`/statique/verifier.js`, autorisé par la CSP de cette seule page), ou par le bouton « J'ai envoyé le message » (`POST /verifier/whatsapp`, sans JavaScript). Vérifiée : nouvel identifiant de session, puis questionnaire. Empreinte déjà connue : « Ce numéro a déjà participé. Merci ! » et session détruite. Numéro refusé ou jeton expiré : message, et bouton pour un nouveau jeton.
+
+Un jeton déjà utilisé qui arrive d'un autre expéditeur est ignoré et compté (`Metriques().SecondExpediteur`) ; une nouvelle livraison du même message par Meta ne compte pas. Les compteurs (`whatsapp.Metriques` : jetons créés, vérifications, déjà participé, numéros refusés, jetons inconnus, second expéditeur) sont agrégés, sans donnée individuelle. Ni numéro, ni jeton, ni corps de notification n'est journalisé. Diguee n'envoie jamais rien dans WhatsApp.
+
+Points d'accroche des tickets suivants : le captcha ALTCHA (ticket #8) se branche dans `creerJeton` (`internal/web/verification.go`), avant toute création de jeton ; la limite par empreinte (`DIGUEE_VERIF_PAR_EMPREINTE_24H`, ticket #8) est l'interface `whatsapp.Limiteur` de `OptionsVerificateur`, appelée juste après le calcul de l'empreinte (statut `Limitee`, message prévu au catalogue) ; le code de secours (ticket #9) ajoutera son envoi à `whatsapp.Integration` (jeton d'accès Graph, modèle) et marquera la session par `session.Magasin.Verifier` ou `Creer`, avec la même détection des doublons.
 
 ### Espace équipe
 
@@ -107,11 +124,15 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_GCP_KMS_CLE`, `DIGUEE_GCP_KMS_JETON_FICHIER` | obligatoires avec `gcp` : version de clé HMAC et fichier du jeton d'accès (secret) | |
 | `DIGUEE_GCP_KMS_POINT_ACCES`, `DIGUEE_GCP_KMS_AC` | `https://cloudkms.googleapis.com` ; facultatif | |
 | `DIGUEE_KMS_DELAI` | `5s` (délai d'attente d'un appel au KMS) | |
+| `DIGUEE_WHATSAPP` | `fake` (secret de développement et page `/dev/whatsapp`, interdits en production) ; `meta` (API Cloud de Meta) | |
+| `DIGUEE_META_ID_NUMERO` | obligatoire avec `meta` : identifiant du numéro de téléphone (*Phone number ID*), seules ses notifications sont lues | |
+| `DIGUEE_META_SECRET_APP` | obligatoire avec `meta` : secret de l'application (*App secret*), vérifie `X-Hub-Signature-256` ; secret | |
+| `DIGUEE_META_JETON_WEBHOOK` | obligatoire avec `meta` : jeton de vérification du webhook (*Verify token*), choisi par vous ; secret | |
 | `DIGUEE_CLE_TOTP` | absente : clé de développement (intégration `chiffrement_totp` en mode `fake`, interdite en production) ; secret, 64 chiffres hexadécimaux | |
 | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | À COMPLÉTER | (ADR 0005) |
 | `DIGUEE_CONTACT` | À COMPLÉTER | |
 | `DIGUEE_NUMERO_CDP` | À COMPLÉTER | `NUMERO_CDP` |
-| `DIGUEE_NUMERO_WHATSAPP` | À COMPLÉTER | `NUMERO_WHATSAPP_DIGUEE` |
+| `DIGUEE_NUMERO_WHATSAPP` | À COMPLÉTER ; numéro international, par exemple `+221 77 123 45 67` (lien `wa.me` et QR code) | `NUMERO_WHATSAPP_DIGUEE` |
 | `DIGUEE_OUVERTURE` | À COMPLÉTER (`AAAA-MM-JJ`) | `OUVERTURE` |
 | `DIGUEE_CLOTURE` | ouverture + 6 mois | `CLOTURE` |
 | `DIGUEE_PREFIXES_AUTORISES` | `70,75,76,77,78` | `PREFIXES_AUTORISES` |
@@ -137,4 +158,4 @@ Avec `DIGUEE_ENV=production`, le serveur refuse de démarrer si une valeur vaut 
 
 ### Règles
 
-Voir `CLAUDE.md` : textes visibles uniquement dans `internal/i18n/catalogues/fr.json` (un test l'impose), aucun numéro, IP ni corps de requête dans les journaux, pages de moins de 100 Ko sans script (`/journal` est paginé par 50 entrées), aucune entrée du journal public déclenchée par un envoi.
+Voir `CLAUDE.md` : textes visibles uniquement dans `internal/i18n/catalogues/fr.json` (un test l'impose), aucun numéro, IP ni corps de requête dans les journaux, pages de moins de 100 Ko sans script (`/journal` est paginé par 50 entrées ; seule exception, la page du jeton charge `/statique/verifier.js`, autorisé par sa seule CSP, et fonctionne aussi sans lui), Diguee ne répond jamais dans WhatsApp, aucune entrée du journal public déclenchée par un envoi.

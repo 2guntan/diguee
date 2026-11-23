@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -43,6 +45,9 @@ func TestProductionRefuseLEmpreinteurFactice(t *testing.T) {
 		!strings.Contains(err.Error(), "l'intégration empreinteur est en mode fake (réglage : DIGUEE_EMPREINTEUR)") {
 		t.Fatalf("refus attendu : %v", err)
 	}
+	if !strings.Contains(err.Error(), "l'intégration whatsapp est en mode fake (réglage : DIGUEE_WHATSAPP)") {
+		t.Errorf("la simulation WhatsApp devrait aussi bloquer : %v", err)
+	}
 	if !strings.Contains(err.Error(), "questionnaire v1") {
 		t.Errorf("les choix provisoires du questionnaire devraient aussi bloquer : %v", err)
 	}
@@ -70,19 +75,9 @@ func TestSIGTERMEcritLeTampon(t *testing.T) {
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 	// Un envoi complet, qui reste dans le tampon (taille 20, délai 30 min).
-	res, err := client.PostForm(racine+"/verifier", url.Values{"numero": {"77 765 43 21"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	var cookie *http.Cookie
-	for _, c := range res.Cookies() {
-		if c.Name == session.NomCookie {
-			cookie = c
-		}
-	}
-	if res.StatusCode != http.StatusSeeOther || cookie == nil {
-		t.Fatalf("vérification : %d", res.StatusCode)
+	webhook, res, cookie := verifierParWhatsApp(t, client, racine, "+221 77 765 43 21")
+	if webhook != http.StatusOK || res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/questionnaire" || cookie == nil {
+		t.Fatalf("vérification : webhook %d, %d", webhook, res.StatusCode)
 	}
 	form := url.Values{"q1": {"1"}, "q2": {"1"}, "q3": {"2"}, "q4": {"1"}, "q5": {"1"}, "q6": {"1"},
 		"q7": {"1"}, "themes": {"1", "2", "3"}, "region": {"1"}, "tranche_age": {"1"},
@@ -90,7 +85,7 @@ func TestSIGTERMEcritLeTampon(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, racine+"/envoyer", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(cookie)
-	res, err = client.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,4 +217,48 @@ func TestMiseEnProductionAuDemarrage(t *testing.T) {
 	if n, _ := jp.Compter(ctx); n != 3 {
 		t.Errorf("%d entrées, 3 attendues", n)
 	}
+}
+
+var reJetonPage = regexp.MustCompile(`<p class="jeton">(DIGUEE [2-9]{4}-[A-Z]{2})</p>`)
+
+// verifierParWhatsApp fait la vérification inversée sur le serveur lancé, en
+// mode DIGUEE_WHATSAPP=fake : jeton, message simulé par la page de
+// développement (notification signée remise au vrai webhook), puis bouton
+// « J'ai envoyé le message ». Il renvoie le statut rendu par le webhook, la
+// réponse finale et le cookie de session.
+func verifierParWhatsApp(t *testing.T, client *http.Client, racine, expediteur string) (webhook int, res *http.Response, cookie *http.Cookie) {
+	t.Helper()
+	faire := func(methode, chemin string, form url.Values) (*http.Response, string) {
+		req, _ := http.NewRequest(methode, racine+chemin, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		r, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		corps, _ := io.ReadAll(r.Body)
+		for _, c := range r.Cookies() {
+			if c.Name == session.NomCookie {
+				cookie = c
+			}
+		}
+		return r, string(corps)
+	}
+	if r, _ := faire(http.MethodPost, "/verifier", url.Values{}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("jeton : %d", r.StatusCode)
+	}
+	_, corps := faire(http.MethodGet, "/verifier/whatsapp", nil)
+	m := reJetonPage.FindStringSubmatch(corps)
+	if m == nil {
+		t.Fatal("jeton absent de la page")
+	}
+	_, corps = faire(http.MethodPost, "/dev/whatsapp", url.Values{"numero": {expediteur}, "texte": {m[1]}})
+	if m := regexp.MustCompile(`statut (\d+)`).FindStringSubmatch(corps); m != nil {
+		webhook, _ = strconv.Atoi(m[1])
+	}
+	res, _ = faire(http.MethodPost, "/verifier/whatsapp", url.Values{})
+	return webhook, res, cookie
 }

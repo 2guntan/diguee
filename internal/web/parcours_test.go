@@ -25,9 +25,11 @@ import (
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/integration"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/tampon"
+	"github.com/2guntan/diguee/internal/whatsapp"
 )
 
 // journalSur est un journal en mémoire, sûr pour un usage concurrent.
@@ -48,13 +50,36 @@ func (j *journalSur) String() string {
 	return j.buf.String()
 }
 
-// banc réunit un serveur avec le parcours complet, sa base et son tampon.
+// banc réunit un serveur avec le parcours complet, sa base, son tampon et la
+// vérification inversée en mode « fake ».
 type banc struct {
-	srv     *Serveur
-	base    *base.Base
-	schema  basetest.Schema
-	tampon  *tampon.Tampon
-	journal *journalSur
+	srv          *Serveur
+	base         *base.Base
+	schema       basetest.Schema
+	tampon       *tampon.Tampon
+	journal      *journalSur
+	whatsapp     *whatsapp.Integration
+	verificateur *whatsapp.Verificateur
+	sessions     *session.Magasin
+	horloge      *horloge
+}
+
+// horloge est une heure réglable par les tests (jetons et sessions).
+type horloge struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (h *horloge) maintenant() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.t
+}
+
+func (h *horloge) avancer(d time.Duration) {
+	h.mu.Lock()
+	h.t = h.t.Add(d)
+	h.mu.Unlock()
 }
 
 func nouveauBanc(t *testing.T, env map[string]string) *banc {
@@ -75,17 +100,32 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	j := &journalSur{}
 	journal := slog.New(slog.NewJSONHandler(j, nil))
 	tp := tampon.Nouveau(tampon.Options{Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal})
-	s, err := Nouveau(Options{
-		Config: cfg, Catalogues: cs, Compteur: b,
-		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
-		Maintenant:  func() time.Time { return time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC) },
-		Empreinteur: empreinte.NouveauHMACLocal(nil), Tampon: tp, Sessions: session.NouveauMagasin(),
-		VerificationFactice: true,
+	h := &horloge{t: time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)}
+	sessions := session.NouveauMagasin()
+	sessions.Maintenant = h.maintenant
+	empreinteur := empreinte.NouveauHMACLocal(nil)
+	wa, err := whatsapp.Construire(cfg, &integration.Registre{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
+		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions, Prefixes: cfg.PrefixesAutorises,
+		Duree: cfg.JetonDuree, Maintenant: h.maintenant, Journal: journal,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j}
+	s, err := Nouveau(Options{
+		Config: cfg, Catalogues: cs, Compteur: b,
+		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
+		Maintenant:  h.maintenant,
+		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
+		WhatsApp: wa, Verificateur: v,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j, whatsapp: wa, verificateur: v, sessions: sessions, horloge: h}
 }
 
 func (b *banc) compter(t *testing.T) (participations, reponses int) {
@@ -181,26 +221,61 @@ func formulaireVoulu(i int) url.Values {
 
 func indiceReponse(q1, q2, q4, q6 int) int { return q1 + 5*q2 + 20*q4 + 80*q6 }
 
-// numeroDeTest renvoie le i-ième numéro, saisi avec des espaces comme le ferait
-// une personne, et sa forme normalisée.
-func numeroDeTest(i int) (saisie, normalise string) {
+// numeroDeTest renvoie le i-ième numéro, tel que Meta transmet l'expéditeur
+// (indicatif compris, sans « + »), et sa forme normalisée.
+func numeroDeTest(i int) (expediteur, normalise string) {
 	n := fmt.Sprintf("77%07d", (1234567+i*48271)%10000000)
-	return n[:2] + " " + n[2:5] + " " + n[5:7] + " " + n[7:], "+221" + n
+	return "221" + n, "+221" + n
+}
+
+var reJeton = regexp.MustCompile(`<p class="jeton">(DIGUEE [2-9]{4}-[A-Z]{2})</p>`)
+
+// demanderJeton ouvre la vérification et renvoie le jeton affiché.
+func demanderJeton(t *testing.T, n *navigateur) string {
+	t.Helper()
+	p := n.get("/verifier")
+	if m := reFormAction.FindStringSubmatch(p.corps); m == nil || m[1] != "/verifier" {
+		t.Fatalf("formulaire de vérification absent : %d", p.statut)
+	}
+	p = n.post("/verifier", url.Values{})
+	if p.statut != http.StatusSeeOther || p.location != "/verifier/whatsapp" || n.cookie == nil {
+		t.Fatalf("création du jeton : %d vers %q", p.statut, p.location)
+	}
+	p = n.get(p.location)
+	m := reJeton.FindStringSubmatch(p.corps)
+	if p.statut != http.StatusOK || m == nil {
+		t.Fatalf("page du jeton : %d", p.statut)
+	}
+	return m[1]
+}
+
+// envoyerWhatsApp joue le rôle du citoyen et de Meta : un message signé
+// arrive au webhook.
+func (b *banc) envoyerWhatsApp(t *testing.T, expediteur, texte string) {
+	t.Helper()
+	if statut, err := b.whatsapp.Simuler(b.srv, expediteur, texte); err != nil || statut != http.StatusOK {
+		t.Fatalf("webhook : %d %v", statut, err)
+	}
+}
+
+// verifier fait la vérification inversée complète, sans JavaScript (bouton
+// « J'ai envoyé le message »), et renvoie la page obtenue.
+func verifier(t *testing.T, b *banc, n *navigateur, expediteur string) page {
+	t.Helper()
+	jeton := demanderJeton(t, n)
+	b.envoyerWhatsApp(t, expediteur, jeton)
+	return n.post("/verifier/whatsapp", url.Values{})
 }
 
 // parcourir fait tout le parcours, de l'accueil à la page Merci, comme une
 // personne sans JavaScript. Il renvoie la dernière page.
-func parcourir(t *testing.T, b *banc, saisie string, form url.Values) page {
+func parcourir(t *testing.T, b *banc, expediteur string, form url.Values) page {
 	t.Helper()
 	n := &navigateur{t: t, h: b.srv}
 	if p := n.get("/"); !strings.Contains(p.corps, `href="/verifier"`) {
 		t.Fatal("l'accueil devrait mener au parcours")
 	}
-	p := n.get("/verifier")
-	if m := reFormAction.FindStringSubmatch(p.corps); m == nil || m[1] != "/verifier" {
-		t.Fatalf("formulaire de vérification absent : %d", p.statut)
-	}
-	p = n.post("/verifier", url.Values{"numero": {saisie}})
+	p := verifier(t, b, n, expediteur)
 	if p.statut != http.StatusSeeOther {
 		return p
 	}
@@ -252,10 +327,10 @@ func contient(xs []string, x string) bool {
 func TestParcoursSansJavaScriptEtRienAvantConfirmation(t *testing.T) {
 	b := nouveauBanc(t, map[string]string{})
 	n := &navigateur{t: t, h: b.srv}
-	saisie, _ := numeroDeTest(1)
+	expediteur, _ := numeroDeTest(1)
 
-	p := n.post("/verifier", url.Values{"numero": {saisie}})
-	if p.statut != http.StatusSeeOther {
+	p := verifier(t, b, n, expediteur)
+	if p.statut != http.StatusSeeOther || p.location != "/questionnaire" {
 		t.Fatalf("vérification : %d", p.statut)
 	}
 	sc := p.entetes.Get("Set-Cookie")
@@ -317,13 +392,13 @@ func TestParcoursSansJavaScriptEtRienAvantConfirmation(t *testing.T) {
 
 func TestDoublonEnBaseEtDansLeTampon(t *testing.T) {
 	b := nouveauBanc(t, map[string]string{})
-	saisie, norm := numeroDeTest(7)
-	if p := parcourir(t, b, saisie, formulaireVoulu(1)); p.statut != http.StatusOK || !strings.Contains(texte(p.corps), "Merci") {
+	expediteur, norm := numeroDeTest(7)
+	if p := parcourir(t, b, expediteur, formulaireVoulu(1)); p.statut != http.StatusOK || !strings.Contains(texte(p.corps), "Merci") {
 		t.Fatalf("premier envoi : %d", p.statut)
 	}
 	deja := "Ce numéro a déjà participé. Merci !"
-	// Encore dans le tampon, même saisi autrement.
-	for _, s := range []string{saisie, norm, "00" + norm[1:]} {
+	// Encore dans le tampon, même écrit autrement.
+	for _, s := range []string{expediteur, norm} {
 		p := parcourir(t, b, s, formulaireVoulu(2))
 		if p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
 			t.Fatalf("doublon dans le tampon (%d) : %d", len(s), p.statut)
@@ -333,15 +408,15 @@ func TestDoublonEnBaseEtDansLeTampon(t *testing.T) {
 		t.Fatal(err)
 	}
 	// En base.
-	if p := parcourir(t, b, saisie, formulaireVoulu(2)); p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
+	if p := parcourir(t, b, expediteur, formulaireVoulu(2)); p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
 		t.Fatalf("doublon en base : %d", p.statut)
 	}
 
 	// Deux sessions vérifiées avec le même numéro : la seconde à envoyer est refusée.
 	autre, _ := numeroDeTest(8)
 	n1, n2 := &navigateur{t: t, h: b.srv}, &navigateur{t: t, h: b.srv}
-	n1.post("/verifier", url.Values{"numero": {autre}})
-	n2.post("/verifier", url.Values{"numero": {autre}})
+	verifier(t, b, n1, autre)
+	verifier(t, b, n2, autre)
 	if p := n1.post("/envoyer", formulaireVoulu(4)); p.statut != http.StatusSeeOther {
 		t.Fatalf("premier envoi : %d", p.statut)
 	}
@@ -356,18 +431,32 @@ func TestDoublonEnBaseEtDansLeTampon(t *testing.T) {
 
 func TestVerificationRefuseLesNumerosInvalides(t *testing.T) {
 	b := nouveauBanc(t, map[string]string{})
-	n := &navigateur{t: t, h: b.srv}
-	for saisie, message := range map[string]string{
-		"12345":        "Ce numéro n'est pas un numéro mobile sénégalais valide.",
-		"33 123 45 67": "Ce préfixe ne correspond pas",
+	for expediteur, message := range map[string]string{
+		"33612345678":  "n'est pas un numéro mobile sénégalais (+221)", // France
+		"22177123456":  "n'est pas un numéro mobile sénégalais (+221)", // 8 chiffres
+		"221331234567": "dont le préfixe ne correspond pas",            // fixe
+		"221721234567": "dont le préfixe ne correspond pas",            // 72, hors liste
 	} {
-		p := n.post("/verifier", url.Values{"numero": {saisie}})
-		if p.statut != http.StatusUnprocessableEntity || !strings.Contains(texte(p.corps), message) || n.cookie != nil {
-			t.Errorf("%q : %d", saisie, p.statut)
+		n := &navigateur{t: t, h: b.srv}
+		p := verifier(t, b, n, expediteur)
+		if p.statut != http.StatusOK || !strings.Contains(texte(p.corps), message) || reJeton.MatchString(p.corps) {
+			t.Errorf("%s : %d", expediteur, p.statut)
 		}
-		if strings.Contains(p.corps, saisie) {
-			t.Errorf("le numéro saisi ne doit pas être réaffiché")
+		if strings.Contains(p.corps, expediteur[3:]) {
+			t.Errorf("le numéro ne doit pas être affiché")
 		}
+		if q := n.get("/questionnaire"); q.statut != http.StatusSeeOther || q.location != "/verifier" {
+			t.Errorf("%s : la session ne doit pas être vérifiée", expediteur)
+		}
+	}
+	if got := b.verificateur.Metriques().NumerosRefuses.Load(); got != 4 {
+		t.Errorf("%d refus comptés, 4 attendus", got)
+	}
+	// Le préfixe 72 devient accepté si la configuration l'autorise.
+	b2 := nouveauBanc(t, map[string]string{"DIGUEE_PREFIXES_AUTORISES": "72,77"})
+	n := &navigateur{t: t, h: b2.srv}
+	if p := verifier(t, b2, n, "221721234567"); p.statut != http.StatusSeeOther || p.location != "/questionnaire" {
+		t.Errorf("préfixe 72 autorisé : %d", p.statut)
 	}
 }
 
@@ -401,39 +490,73 @@ func TestAccueilMeneAuParcours(t *testing.T) {
 	}
 }
 
-func TestPagesDuParcoursLegeresSansScript(t *testing.T) {
-	b := nouveauBanc(t, map[string]string{})
+func TestPagesDuParcoursLegeres(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{"DIGUEE_NUMERO_WHATSAPP": "+221 77 000 00 00"})
 	_, css := get(t, b.srv, "/statique/diguee.css")
 	_, logo := get(t, b.srv, "/statique/logo.svg")
+	_, js := get(t, b.srv, "/statique/verifier.js")
 	n := &navigateur{t: t, h: b.srv}
-	saisie, _ := numeroDeTest(11)
+	expediteur, _ := numeroDeTest(11)
 	pages := map[string]page{"verifier": n.get("/verifier")}
-	n.post("/verifier", url.Values{"numero": {saisie}})
+	jeton := demanderJeton(t, n)
+	pages["jeton"] = n.get("/verifier/whatsapp")
+	pages["jeton pas encore reçu"] = n.post("/verifier/whatsapp", url.Values{})
+	b.envoyerWhatsApp(t, expediteur, jeton)
+	n.post("/verifier/whatsapp", url.Values{})
 	pages["questionnaire"] = n.get("/questionnaire")
 	pages["questionnaire avec erreurs"] = n.post("/questionnaire/recapitulatif", url.Values{})
 	pages["recapitulatif"] = n.post("/questionnaire/recapitulatif", formulaireVoulu(9))
 	_, caches := champs(pages["recapitulatif"].corps)
 	n.post("/envoyer", caches)
 	pages["merci"] = n.get("/merci")
-	pages["deja"] = parcourir(t, b, saisie, formulaireVoulu(9))
+	pages["deja"] = parcourir(t, b, expediteur, formulaireVoulu(9))
 	pages["session expiree"] = n.post("/envoyer", caches)
+	n2 := &navigateur{t: t, h: b.srv}
+	demanderJeton(t, n2)
+	b.horloge.avancer(11 * time.Minute)
+	pages["jeton expiré"] = n2.get("/verifier/whatsapp")
+	pages["simulation"] = n2.get("/dev/whatsapp")
 	for nom, p := range pages {
-		if poids := len(p.corps) + len(css) + len(logo); poids >= 100*1024 {
+		avecScript := nom == "jeton" || nom == "jeton pas encore reçu"
+		poids := len(p.corps) + len(css) + len(logo)
+		if avecScript {
+			poids += len(js)
+		}
+		if poids >= 100*1024 {
 			t.Errorf("%s pèse %d octets", nom, poids)
 		}
 		bas := strings.ToLower(p.corps)
-		for _, interdit := range []string{"<script", "javascript:", " onload=", " onclick=", " onsubmit=", " onchange="} {
+		// Seule la page du jeton charge un script, servi depuis le domaine,
+		// et sa CSP est la seule à l'autoriser.
+		scripts := strings.Count(bas, "<script")
+		csp := p.entetes.Get("Content-Security-Policy")
+		if avecScript {
+			if scripts != 1 || !strings.Contains(p.corps, `<script src="/statique/verifier.js" defer></script>`) ||
+				!strings.Contains(csp, "script-src 'self'") || strings.Contains(csp, "unsafe") {
+				t.Errorf("%s : script ou CSP inattendus (%q)", nom, csp)
+			}
+		} else if scripts != 0 || strings.Contains(csp, "script-src") {
+			t.Errorf("%s : aucun script attendu", nom)
+		}
+		for _, interdit := range []string{"javascript:", " onload=", " onclick=", " onsubmit=", " onchange="} {
 			if strings.Contains(bas, interdit) {
 				t.Errorf("%s contient %q", nom, interdit)
 			}
 		}
-		// Seul lien sortant : le partage WhatsApp de la page Merci, sans identifiant.
+		// Seuls liens sortants : le partage WhatsApp de la page Merci, sans
+		// identifiant, et le lien wa.me de la page du jeton.
 		externes := strings.Count(bas, "https://") + strings.Count(bas, "http://")
-		if nom == "merci" {
+		svg := strings.Count(bas, "http://www.w3.org/2000/svg")
+		switch {
+		case nom == "merci":
 			if externes != 1 || !strings.Contains(p.corps, `href="https://wa.me/?text=`) {
 				t.Errorf("merci : lien de partage attendu")
 			}
-		} else if externes != 0 {
+		case avecScript:
+			if externes-svg != 1 || !strings.Contains(p.corps, `href="https://wa.me/221770000000?text=DIGUEE%20`) {
+				t.Errorf("%s : lien wa.me attendu", nom)
+			}
+		case externes != 0:
 			t.Errorf("%s contient un lien sortant", nom)
 		}
 		if strings.Contains(p.corps, "⟦") {
@@ -442,6 +565,20 @@ func TestPagesDuParcoursLegeresSansScript(t *testing.T) {
 		if cc := p.entetes.Get("Cache-Control"); cc != "no-store" {
 			t.Errorf("%s : Cache-Control %q", nom, cc)
 		}
+	}
+	for nom, attendu := range map[string]string{
+		"jeton":                 "J'ai envoyé le message",
+		"jeton pas encore reçu": "Nous n'avons pas encore reçu votre message.",
+		"jeton expiré":          "Ce message de vérification a expiré.",
+		"deja":                  "Ce numéro a déjà participé. Merci\u00a0!",
+		"simulation":            "Simulation de WhatsApp",
+	} {
+		if !strings.Contains(texte(pages[nom].corps), attendu) {
+			t.Errorf("%s : %q attendu", nom, attendu)
+		}
+	}
+	if !strings.Contains(pages["jeton"].corps, `<figure class="qr">`) {
+		t.Error("QR code absent de la page du jeton")
 	}
 }
 
@@ -467,13 +604,17 @@ func TestCataloguesCouvrentLeQuestionnaire(t *testing.T) {
 	}
 }
 
-func TestVerificationFacticeInterditeEnProduction(t *testing.T) {
+func TestSimulationWhatsAppInterditeEnProduction(t *testing.T) {
 	cfg, _ := config.Charger(func(k string) string {
 		return map[string]string{"DIGUEE_ENV": "production", "DIGUEE_POSTGRES_URL": "x"}[k]
 	})
 	cs, _ := i18n.Charger()
-	if _, err := Nouveau(Options{Config: cfg, Catalogues: cs, VerificationFactice: true}); err == nil {
-		t.Error("la vérification factice doit être refusée en production")
+	wa, err := whatsapp.Construire(cfg, &integration.Registre{})
+	if err != nil || !wa.Fausse() {
+		t.Fatal(err)
+	}
+	if _, err := Nouveau(Options{Config: cfg, Catalogues: cs, WhatsApp: wa}); err == nil {
+		t.Error("le mode fake de WhatsApp doit être refusé en production")
 	}
 }
 
@@ -536,11 +677,11 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 	var numeros []string
 	h := empreinte.NouveauHMACLocal(nil)
 	for i := range nb {
-		saisie, norm := numeroDeTest(i)
+		expediteur, norm := numeroDeTest(i)
 		numeros = append(numeros, norm)
 		e, _ := h.Calculer(context.Background(), norm)
 		empreintes[hex.EncodeToString(e[:])] = i
-		if p := parcourir(t, b, saisie, formulaireVoulu(i)); p.statut != http.StatusOK {
+		if p := parcourir(t, b, expediteur, formulaireVoulu(i)); p.statut != http.StatusOK {
 			t.Fatalf("envoi %d : %d", i, p.statut)
 		}
 	}
@@ -564,6 +705,12 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 		}
 		if m := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b|192\.0\.2\.|\[?::1\]?`).FindString(src.contenu); m != "" {
 			t.Errorf("%s : adresse IP %q", src.nom, m)
+		}
+		// Ni jeton, ni corps de notification WhatsApp.
+		for _, motif := range []string{"DIGUEE ", "whatsapp_business_account", "wamid", `"from"`} {
+			if strings.Contains(src.contenu, motif) {
+				t.Errorf("%s : contient %q", src.nom, motif)
+			}
 		}
 	}
 	donnees := regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")

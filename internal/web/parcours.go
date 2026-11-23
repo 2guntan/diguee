@@ -8,14 +8,13 @@ import (
 	"strconv"
 
 	"github.com/2guntan/diguee/internal/config"
-	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/tampon"
 )
 
-// Parcours de réponse (spec §4) : vérification (factice pour l'instant),
-// questionnaire, récapitulatif, envoi, merci. Tout fonctionne sans
+// Parcours de réponse (spec §4) : vérification inversée par WhatsApp
+// (verification.go), questionnaire, récapitulatif, envoi, merci. Tout fonctionne sans
 // JavaScript : les réponses en cours ne vivent que dans le formulaire du
 // navigateur, et le récapitulatif les porte dans des champs cachés. Rien n'est
 // écrit en base avant la confirmation ; à l'envoi, la participation et la
@@ -23,12 +22,6 @@ import (
 
 // tailleMaxFormulaire borne le corps d'un formulaire.
 const tailleMaxFormulaire = 64 << 10
-
-// Clés des messages d'erreur de la vérification.
-const (
-	errVerifFormat  = "verif.erreur.format"
-	errVerifPrefixe = "verif.erreur.prefixe"
-)
 
 // VueChoix est un choix tel que l'affiche le formulaire.
 type VueChoix struct {
@@ -67,12 +60,11 @@ type Cache struct {
 	Valeur string
 }
 
-// parcoursActif indique si le parcours de réponse est servi : il faut une
-// vérification (seule la vérification factice existe pour l'instant, et
-// seulement hors production), un empreinteur, un tampon et des sessions.
+// parcoursActif indique si le parcours de réponse est servi : il faut la
+// vérification inversée, un empreinteur, un tampon et des sessions.
 func (s *Serveur) parcoursActif() bool {
 	o := s.opt
-	return o.VerificationFactice && o.Empreinteur != nil && o.Tampon != nil && o.Sessions != nil
+	return o.WhatsApp != nil && o.Verificateur != nil && o.Empreinteur != nil && o.Tampon != nil && o.Sessions != nil
 }
 
 // ouvert enveloppe les pages du parcours : hors de la période d'ouverture,
@@ -94,59 +86,11 @@ func (s *Serveur) ouvert(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Serveur) verifierPage(w http.ResponseWriter, r *http.Request) {
-	s.rendre(w, r, http.StatusOK, "verifier", s.donnees())
-}
-
-// verifierNumero est la vérification factice : le numéro est accepté sans
-// envoi de message, converti en empreinte puis oublié aussitôt. Il n'est ni
-// journalisé, ni réaffiché.
-func (s *Serveur) verifierNumero(w http.ResponseWriter, r *http.Request) {
-	saisie := r.PostForm.Get("numero")
-	delete(r.PostForm, "numero")
-	delete(r.Form, "numero")
-	numero, err := empreinte.Normaliser(saisie, s.opt.Config.PrefixesAutorises)
-	if err != nil {
-		d := s.donnees()
-		d.Erreur = errVerifFormat
-		if errors.Is(err, empreinte.ErrPrefixe) {
-			d.Erreur = errVerifPrefixe
-		}
-		s.rendre(w, r, http.StatusUnprocessableEntity, "verifier", d)
-		return
-	}
-	// Au-delà de cette ligne, le numéro n'est plus référencé : seule
-	// l'empreinte entre dans la session.
-	e, err := s.opt.Empreinteur.Calculer(r.Context(), numero)
-	if err != nil {
-		s.opt.Journal.Error("calcul de l'empreinte", "erreur", err)
-		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
-		return
-	}
-	deja, err := s.opt.Tampon.DejaParticipe(r.Context(), e)
-	if err != nil {
-		s.opt.Journal.Error("détection des doublons", "erreur", err)
-		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
-		return
-	}
-	if deja {
-		s.opt.Sessions.Detruire(w, r)
-		s.rendre(w, r, http.StatusConflict, "deja_participe", s.donnees())
-		return
-	}
-	if err := s.opt.Sessions.Creer(w, e); err != nil {
-		s.opt.Journal.Error("création de session", "erreur", err)
-		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
-		return
-	}
-	http.Redirect(w, r, "/questionnaire", http.StatusSeeOther)
-}
-
 // avecSession exige une session vérifiée.
 func (s *Serveur) avecSession(h func(http.ResponseWriter, *http.Request, session.Etat)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		etat, ok := s.opt.Sessions.Lire(r)
-		if !ok {
+		if !ok || !etat.Verifiee {
 			if r.Method == http.MethodGet {
 				http.Redirect(w, r, "/verifier", http.StatusSeeOther)
 				return
@@ -198,13 +142,13 @@ func (s *Serveur) envoyer(w http.ResponseWriter, r *http.Request, etat session.E
 	err := s.opt.Tampon.Ajouter(r.Context(), etat.Empreinte, rep)
 	switch {
 	case errors.Is(err, tampon.ErrDejaParticipe):
-		s.opt.Sessions.Detruire(w, r)
+		s.detruireSession(w, r)
 		s.rendre(w, r, http.StatusConflict, "deja_participe", s.donnees())
 	case err != nil:
 		s.opt.Journal.Error("dépôt dans le tampon", "erreur", err)
 		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
 	default:
-		s.opt.Sessions.Detruire(w, r)
+		s.detruireSession(w, r)
 		http.Redirect(w, r, "/merci", http.StatusSeeOther)
 	}
 }

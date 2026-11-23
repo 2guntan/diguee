@@ -64,6 +64,8 @@ type Config struct {
 	OVHKMS      OVHKMS        // réglages de DIGUEE_EMPREINTEUR=ovh
 	GCPKMS      GCPKMS        // réglages de DIGUEE_EMPREINTEUR=gcp (repli, ADR 0006)
 	KMSDelai    time.Duration // DIGUEE_KMS_DELAI : délai d'attente d'un appel au KMS, 5s
+	WhatsApp    string        // DIGUEE_WHATSAPP : fake (défaut, page de simulation) ou meta (API Cloud)
+	Meta        Meta          // réglages de DIGUEE_WHATSAPP=meta
 
 	// CleTOTP chiffre les secrets TOTP de l'espace équipe (AES-256-GCM). Secret,
 	// 32 octets. Vide : clé de développement écrite dans le code, déclarée
@@ -125,7 +127,17 @@ type GCPKMS struct {
 	AC           string // DIGUEE_GCP_KMS_AC : chemin d'autorités de certification (PEM), facultatif
 }
 
+// Meta décrit l'application WhatsApp de l'API Cloud de Meta (spec §5.1). Le
+// secret de l'application et le jeton de vérification du webhook sont des
+// secrets : ils ne sont jamais journalisés ni affichés.
+type Meta struct {
+	IDNumero     string // DIGUEE_META_ID_NUMERO : identifiant du numéro de téléphone (phone_number_id)
+	SecretApp    string // DIGUEE_META_SECRET_APP : secret de l'application, vérifie X-Hub-Signature-256 ; secret
+	JetonWebhook string // DIGUEE_META_JETON_WEBHOOK : jeton de vérification du webhook (hub.verify_token) ; secret
+}
+
 var (
+	motifIDMeta = regexp.MustCompile(`^[0-9]{5,30}$`)
 	motifUUID   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	motifCleGCP = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
 )
@@ -170,11 +182,25 @@ func Charger(getenv func(string) string) (*Config, error) {
 	}
 	c.CleTOTP = l.cle("DIGUEE_CLE_TOTP", 32)
 
+	c.WhatsApp = l.choix("DIGUEE_WHATSAPP", "fake", "fake", "meta")
+	if c.WhatsApp == "meta" {
+		c.Meta = Meta{
+			IDNumero:     l.motif("DIGUEE_META_ID_NUMERO", motifIDMeta, "l'identifiant numérique du numéro de téléphone (phone_number_id)"),
+			SecretApp:    l.secret("DIGUEE_META_SECRET_APP", 16),
+			JetonWebhook: l.secret("DIGUEE_META_JETON_WEBHOOK", 16),
+		}
+	}
+
 	c.StructureNom = l.texte("DIGUEE_STRUCTURE_NOM")
 	c.StructureAdresse = l.texte("DIGUEE_STRUCTURE_ADRESSE")
 	c.Contact = l.texte("DIGUEE_CONTACT")
 	c.NumeroCDP = l.texte("DIGUEE_NUMERO_CDP")
 	c.NumeroWhatsApp = l.texte("DIGUEE_NUMERO_WHATSAPP")
+	if !c.NumeroWhatsApp.Provisoire() {
+		if _, err := c.NumeroWhatsAppChiffres(); err != nil {
+			l.erreur("DIGUEE_NUMERO_WHATSAPP", err)
+		}
+	}
 
 	c.Ouverture = l.date("DIGUEE_OUVERTURE", ACompleter)
 	if l.getenv("DIGUEE_CLOTURE") == "" && !c.Ouverture.Provisoire() {
@@ -223,6 +249,28 @@ func (c *Config) Provisoires() []string {
 		}
 	}
 	return noms
+}
+
+// NumeroWhatsAppChiffres renvoie le numéro WhatsApp de Diguee en chiffres
+// seulement, indicatif compris, comme l'attend wa.me (« 221771234567 »).
+func (c *Config) NumeroWhatsAppChiffres() (string, error) {
+	if c.NumeroWhatsApp.Provisoire() {
+		return "", errors.New("vaut « " + ACompleter + " »")
+	}
+	var b strings.Builder
+	for i, r := range c.NumeroWhatsApp.Valeur {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '+' && i == 0, r == ' ':
+		default:
+			return "", fmt.Errorf("vaut %q ; attendu un numéro international comme +221 77 123 45 67", c.NumeroWhatsApp.Valeur)
+		}
+	}
+	if n := b.Len(); n < 8 || n > 15 || strings.HasPrefix(b.String(), "0") {
+		return "", fmt.Errorf("vaut %q ; attendu un numéro international comme +221 77 123 45 67", c.NumeroWhatsApp.Valeur)
+	}
+	return b.String(), nil
 }
 
 // Phase est l'état de la consultation à un instant donné.
@@ -276,7 +324,17 @@ func (l *lecteur) choix(nom, defaut string, permis ...string) string {
 func (l *lecteur) obligatoire(nom string) string {
 	v := l.chaine(nom, "")
 	if v == "" {
-		l.erreur(nom, errors.New("est obligatoire avec ce DIGUEE_EMPREINTEUR"))
+		l.erreur(nom, errors.New("est obligatoire avec ce mode (DIGUEE_EMPREINTEUR ou DIGUEE_WHATSAPP)"))
+	}
+	return v
+}
+
+// secret lit un secret obligatoire d'au moins n caractères. Le message
+// d'erreur ne cite jamais la valeur.
+func (l *lecteur) secret(nom string, n int) string {
+	v := l.obligatoire(nom)
+	if v != "" && len(v) < n {
+		l.erreur(nom, fmt.Errorf("est trop court (%d caractères au moins)", n))
 	}
 	return v
 }
