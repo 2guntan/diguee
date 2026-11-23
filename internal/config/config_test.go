@@ -41,7 +41,7 @@ func TestValeursParDefaut(t *testing.T) {
 		t.Errorf("le numéro CDP devrait être provisoire : %q", c.NumeroCDP.Valeur)
 	}
 	attendus := []string{"DIGUEE_STRUCTURE_NOM", "DIGUEE_STRUCTURE_ADRESSE", "DIGUEE_CONTACT",
-		"DIGUEE_NUMERO_CDP", "DIGUEE_NUMERO_WHATSAPP", "DIGUEE_OUVERTURE", "DIGUEE_CLOTURE"}
+		"DIGUEE_NUMERO_CDP", "DIGUEE_NUMERO_WHATSAPP", "DIGUEE_POPULATION_ANSD", "DIGUEE_OUVERTURE", "DIGUEE_CLOTURE"}
 	if got := c.Provisoires(); !slices.Equal(got, attendus) {
 		t.Errorf("provisoires = %v, attendu %v", got, attendus)
 	}

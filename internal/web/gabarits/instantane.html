@@ -1,0 +1,38 @@
+{{define "instantane"}}<div class="instantane">
+<p class="lead">{{tf "resultats.portee" (date .Jour) (date .DernierJour)}}</p>
+<p class="compteur"><strong>{{pluriel "resultats.compteur" .Reponses}}</strong> {{t "resultats.compteur.arrondi"}}</p>
+{{- if not .Resultats}}
+<p>{{tf "resultats.sous_seuil" (nombre .SeuilPublication)}}</p>
+{{- else}}
+<p class="alerte"><strong>{{t "resultats.non_ponderes"}}</strong> {{t "resultats.non_ponderes.explication"}}</p>
+<p>{{tf "resultats.regles" (nombre .SeuilCase)}}</p>
+{{- if .AutresRegions}}
+<p>{{tf "resultats.autres_regions.liste" (liste .AutresRegions)}}</p>
+{{- end}}
+<h2>{{t "resultats.composition.titre"}}</h2>
+<p>{{if .SourcePopulation}}{{tf "resultats.composition.source" .SourcePopulation}}{{else}}{{t "resultats.composition.non_disponible"}}{{end}} {{t "resultats.composition.note"}}</p>
+{{- range .Composition}}
+<div class="tableau"><table><thead><tr><th scope="col">{{.Titre}}</th><th scope="col">{{t "resultats.composition.echantillon"}}</th><th scope="col">{{t "resultats.composition.population"}}</th></tr></thead><tbody>
+{{- range .Lignes}}<tr><th scope="row">{{.Libelle}}<td>{{.Echantillon}}<td>{{.Population}}{{end -}}
+</tbody></table></div>
+{{- end}}
+<h2>{{t "resultats.questions.titre"}}</h2>
+{{- range .Questions}}
+<h3>{{.Libelle}}</h3>
+{{template "tableau" .Ensemble}}
+{{- range .Croisements}}
+<details><summary>{{.Titre}}</summary>{{template "tableau" .}}</details>
+{{- end}}
+{{- end}}
+<h2>{{t "resultats.profil.titre"}}</h2>
+{{- range .Profil}}
+<details><summary>{{.Titre}}</summary>{{template "tableau" .}}</details>
+{{- end}}
+{{- end}}
+</div>
+{{end}}
+
+{{/* Les balises de fin </td>, </th> et </tr>, facultatives en HTML, sont omises : la page reste sous 100 Ko. */}}
+{{define "tableau"}}<div class="tableau"><table>{{if .Multiple}}<caption>{{t "resultats.multiple"}}</caption>{{end}}<thead><tr><th scope="col">{{.EnTete}}</th>{{range .Colonnes}}<th scope="col">{{.}}</th>{{end}}<th scope="col">{{t "resultats.effectif"}}</th></tr></thead><tbody>
+{{- range .Rangees}}<tr><th scope="row">{{.Libelle}}{{range .Cases}}<td>{{.}}{{end}}<td>{{.Effectif}}{{end -}}
+</tbody></table></div>{{end}}

@@ -30,6 +30,7 @@ import (
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
+	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
@@ -208,7 +209,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 		ParHeure: cfg.SMSIPParHeure, Maintenant: h.maintenant, Attendre: att.attendre, Journal: journal,
 	})
 	s, err := Nouveau(Options{
-		Config: cfg, Catalogues: cs, Compteur: b,
+		Config: cfg, Catalogues: cs, Publications: b,
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
 		Maintenant:  h.maintenant,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
@@ -825,6 +826,7 @@ func pgDump(t *testing.T, sc basetest.Schema) string {
 func lignesCopy(t *testing.T, dump, table string) (colonnes []string, lignes [][]string) {
 	t.Helper()
 	sc := bufio.NewScanner(strings.NewReader(dump))
+	sc.Buffer(make([]byte, 0, 1<<16), 16<<20) // une ligne de publication dépasse 64 Ko
 	dedans := false
 	reEntete := regexp.MustCompile(`^COPY \S+\.` + table + ` \(([^)]*)\) FROM stdin;$`)
 	for sc.Scan() {
@@ -977,5 +979,50 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 		if f := float64(concordantes) / float64(paires); f < 0.35 || f > 0.65 {
 			t.Errorf("%s : %.2f des paires gardent l'ordre d'arrivée (0,5 attendu au hasard)", nom, f)
 		}
+	}
+
+	// Ticket #11 : la table publication apparaît dans le dump. Une
+	// publication sur ces 200 réponses (seuil abaissé à 100 pour qu'elle
+	// contienne des tableaux) n'y ajoute que des agrégats datés au jour : ni
+	// numéro, ni IP, ni heure, ni réponse individuelle (aucun identifiant de
+	// réponse), et une seule entrée au journal public, la sienne.
+	rendu, err := RendreInstantane(b.srv.opt.Catalogues, questionnaire.Courant())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &publication.Publieur{Magasin: b.base, Questionnaire: questionnaire.Courant(), SeuilPublication: 100,
+		SeuilCase: b.cfg.SeuilCase, Rendu: rendu}
+	r, err := p.Publier(context.Background(), time.Now().UTC().AddDate(0, 0, 1))
+	if err != nil || !r.Nouvelle || !r.Publication.ResultatsPublies || r.Publication.Reponses != nb {
+		t.Fatalf("publication : %+v, %v", r.Publication, err)
+	}
+	dump = pgDump(t, b.schema)
+	colsP, pubs := lignesCopy(t, dump, "publication")
+	if len(pubs) != 1 || strings.Join(colsP, ",") != "jour,reponses,resultats_publies,instantane,html,empreinte" {
+		t.Fatalf("publication dans le dump : %v, %d ligne(s)", colsP, len(pubs))
+	}
+	instantane := strings.Join(pubs[0], "\t")
+	for _, num := range numeros {
+		if strings.Contains(instantane, num[4:]) || strings.Contains(instantane, num[1:]) {
+			t.Fatal("l'instantané contient un numéro")
+		}
+	}
+	for _, motif := range []string{`\b(?:\d{1,3}\.){3}\d{1,3}\b`, `\d{1,2}:\d{2}`, `(?i)\btime`, `(?i)GMT`, `"id"`, `[0-9a-f]{8}-[0-9a-f]{4}-`} {
+		if m := regexp.MustCompile(motif).FindString(instantane); m != "" {
+			t.Errorf("instantané : %q (motif %s)", m, motif)
+		}
+	}
+	donnees = regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")
+	donnees = reJournal.ReplaceAllString(donnees, "")
+	// Seule exception, toujours : l'entrée du journal public, horodatée à la
+	// minute (spec §10), écrite par la publication et non par un envoi.
+	donnees = regexp.MustCompile(`(?s)COPY \S+\.journal_public .*?\n\\\.\n`).ReplaceAllString(donnees, "")
+	for _, motif := range []string{`\d{1,2}:\d{2}`, `(?i)\btimestamp`, `(?i)\btime\b`, `(?i)\binterval\b`, `(?i)\bserial\b`, `(?i)nextval`} {
+		if m := regexp.MustCompile(motif).FindString(donnees); m != "" {
+			t.Errorf("dump après publication : horodatage ou séquence %q", m)
+		}
+	}
+	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 1 || !strings.Contains(strings.Join(lj[0], "\t"), "publication_quotidienne") {
+		t.Errorf("journal public après publication : %d entrée(s)", len(lj))
 	}
 }

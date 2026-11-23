@@ -1,0 +1,21 @@
+{{define "titre"}}{{t "resultats.archives.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "resultats.archives.titre"}}</h1>
+    <p class="lead">{{t "resultats.archives.chapeau"}}</p>
+    {{- with .Resultats}}
+    {{- if .Aucune}}
+    <p>{{t "resultats.aucune"}}</p>
+    {{- else}}
+    <ul class="publications">
+    {{- range .Publications}}
+      <li><a href="{{.Lien}}">{{tf "resultats.archives.jour" (date .Jour)}}</a> · {{pluriel "resultats.compteur" .Reponses}}{{if .Resultats}} {{t "resultats.archives.detail"}}{{end}} · <a href="{{.Lien}}.json">{{t "resultats.archives.json"}}</a></li>
+    {{- end}}
+    </ul>
+    {{- end}}
+    {{- end}}
+    <p><a href="/resultats">{{t "resultats.voir_derniere"}}</a></p>
+  </div>
+</section>
+{{end}}

@@ -5,7 +5,6 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"embed"
 	"fmt"
 	"html/template"
@@ -38,7 +37,7 @@ var fichiersStatiques embed.FS
 
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
-	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal",
+	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal", "resultats", "resultats_publications",
 	"sans_javascript", "verifier_sms_suspendu", "verifier_code", "verifier_code_saisie", "dev_sms"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
@@ -63,20 +62,18 @@ const (
 	scriptAltcha   = "/statique/altcha.js"   // page de vérification : preuve de travail
 )
 
-// Compteur donne le nombre de réponses enregistrées.
-type Compteur interface {
-	CompterReponses(ctx context.Context) (int64, error)
-}
-
 // Options regroupe les dépendances du serveur web.
 type Options struct {
 	Config     *config.Config
 	Catalogues *i18n.Catalogues
-	Compteur   Compteur
-	Version    string
-	SHA256     string
-	Journal    *slog.Logger
-	Maintenant func() time.Time // time.Now par défaut
+	// Publications donne les publications quotidiennes : le compteur de
+	// l'accueil est celui de la dernière (jamais un comptage en direct), et
+	// /resultats les sert. Obligatoire.
+	Publications Publications
+	Version      string
+	SHA256       string
+	Journal      *slog.Logger
+	Maintenant   func() time.Time // time.Now par défaut
 
 	// JournalPublic sert /journal et /journal.json s'il est fourni.
 	JournalPublic *journal.Journal
@@ -154,6 +151,9 @@ func Nouveau(opt Options) (*Serveur, error) {
 	if opt.SMS != nil && opt.SMS.Fausse() && opt.Config.Env == config.Production {
 		return nil, fmt.Errorf("la console des codes SMS (DIGUEE_SMS=fake) est interdite en production")
 	}
+	if opt.Publications == nil {
+		return nil, fmt.Errorf("web : Publications est obligatoire")
+	}
 	s := &Serveur{opt: opt, gabarits: map[string]*template.Template{}, mux: http.NewServeMux()}
 	if opt.Codes != nil {
 		s.codeWhatsApp = &canalCode{codes: opt.Codes, ralentisseur: opt.Ralentisseur, vue: VueCanal{
@@ -204,6 +204,10 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /methodologie", s.page("methodologie"))
 	s.mux.HandleFunc("GET /confidentialite", s.page("confidentialite"))
 	s.mux.HandleFunc("GET /sante", s.sante)
+	s.mux.HandleFunc("GET /resultats", s.resultatsDerniers)
+	s.mux.HandleFunc("GET /resultats.json", s.resultatsJSON)
+	s.mux.HandleFunc("GET /resultats/publications", s.resultatsPublications)
+	s.mux.HandleFunc("GET /resultats/{jour}", s.resultatsJour)
 	if opt.JournalPublic != nil {
 		s.mux.HandleFunc("GET /journal", s.journalPage)
 		s.mux.HandleFunc("GET /journal.json", s.journalExport)
@@ -276,8 +280,14 @@ type Donnees struct {
 	Phase    config.Phase
 	Version  string
 	SHA256   string
-	Compteur int64
 	Parcours bool // le parcours de réponse est servi
+
+	// Accueil : le compteur de la dernière publication quotidienne.
+	Compteur     int64
+	SeuilAtteint bool      // la dernière publication contient les résultats détaillés
+	JourCompteur time.Time // jour de cette publication ; zéro s'il n'y en a pas encore
+
+	Resultats *VueResultats // pages /resultats
 
 	// Pages du parcours.
 	Erreur       string // clé d'un message d'erreur
@@ -348,13 +358,15 @@ func (s *Serveur) rendre(w http.ResponseWriter, r *http.Request, statut int, pag
 
 func (s *Serveur) accueil(w http.ResponseWriter, r *http.Request) {
 	d := s.donnees()
-	n, err := s.opt.Compteur.CompterReponses(r.Context())
+	res, err := s.opt.Publications.DernierResume(r.Context())
 	if err != nil {
 		s.opt.Journal.Error("lecture du compteur", "erreur", err)
 		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", d)
 		return
 	}
-	d.Compteur = n
+	if res != nil {
+		d.Compteur, d.SeuilAtteint, d.JourCompteur = int64(res.Reponses), res.ResultatsPublies, res.Jour
+	}
 	s.rendre(w, r, http.StatusOK, "accueil", d)
 }
 
@@ -371,7 +383,7 @@ func (s *Serveur) introuvable(w http.ResponseWriter, r *http.Request) {
 // sante répond 200 si la base répond ; utilisé par systemd et la supervision.
 func (s *Serveur) sante(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if _, err := s.opt.Compteur.CompterReponses(r.Context()); err != nil {
+	if _, err := s.opt.Publications.DernierResume(r.Context()); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("base indisponible\n"))
 		return
@@ -399,6 +411,7 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 		"pluriel": func(cle string, n any) string { return c.Pluriel(cle, entier(n)) },
 		"nombre":  func(n any) string { return c.Nombre(entier(n)) },
 		"duree":   c.Duree,
+		"date":    c.Date,
 		"heure":   c.Heure,
 		"dateheure": func(t time.Time) string {
 			t = t.UTC()

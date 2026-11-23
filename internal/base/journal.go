@@ -36,21 +36,54 @@ func (v vueJournal) DerniereDuType(ctx context.Context, t journal.Type) (*journa
 func (b *Base) AjouterAuJournal(ctx context.Context, preparer func(context.Context, journal.Vue) (*journal.Entree, error)) (*journal.Entree, error) {
 	var e *journal.Entree
 	err := pgx.BeginFunc(ctx, b.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", verrouJournal); err != nil {
-			return err
-		}
 		var err error
-		if e, err = preparer(ctx, vueJournal{tx}); err != nil || e == nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, "INSERT INTO journal_public ("+colonnesJournal+") VALUES ($1, $2, $3, $4, $5, $6)",
-			e.Numero, e.Horodatage, string(e.Type), string(e.Contenu), e.EmpreintePrecedente[:], e.Empreinte[:])
+		e, err = ajouterAuJournal(ctx, tx, preparer)
 		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("journal public : %w", err)
 	}
 	return e, nil
+}
+
+// ajouterAuJournal prend le verrou d'écriture du journal dans la
+// transaction, puis inscrit l'entrée préparée.
+func ajouterAuJournal(ctx context.Context, tx pgx.Tx, preparer func(context.Context, journal.Vue) (*journal.Entree, error)) (*journal.Entree, error) {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", verrouJournal); err != nil {
+		return nil, err
+	}
+	e, err := preparer(ctx, vueJournal{tx})
+	if err != nil || e == nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, "INSERT INTO journal_public ("+colonnesJournal+") VALUES ($1, $2, $3, $4, $5, $6)",
+		e.Numero, e.Horodatage, string(e.Type), string(e.Contenu), e.EmpreintePrecedente[:], e.Empreinte[:])
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// journalTx est le journal public vu depuis une transaction en cours : une
+// entrée inscrite par lui n'existe que si la transaction est validée.
+type journalTx struct{ tx pgx.Tx }
+
+func (j journalTx) AjouterAuJournal(ctx context.Context, preparer func(context.Context, journal.Vue) (*journal.Entree, error)) (*journal.Entree, error) {
+	e, err := ajouterAuJournal(ctx, j.tx, preparer)
+	if err != nil {
+		return nil, fmt.Errorf("journal public : %w", err)
+	}
+	return e, nil
+}
+
+func (j journalTx) CompterJournal(ctx context.Context) (int64, error) {
+	var n int64
+	err := j.tx.QueryRow(ctx, "SELECT coalesce(max(numero), 0) FROM journal_public").Scan(&n)
+	return n, err
+}
+
+func (j journalTx) LireJournal(ctx context.Context, premier, dernier int64) ([]journal.Entree, error) {
+	return lireJournal(ctx, j.tx, premier, dernier)
 }
 
 // CompterJournal implémente journal.Magasin.
@@ -62,7 +95,15 @@ func (b *Base) CompterJournal(ctx context.Context) (int64, error) {
 
 // LireJournal implémente journal.Magasin.
 func (b *Base) LireJournal(ctx context.Context, premier, dernier int64) ([]journal.Entree, error) {
-	lignes, err := b.Pool.Query(ctx, "SELECT "+colonnesJournal+
+	return lireJournal(ctx, b.Pool, premier, dernier)
+}
+
+type requeteur interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func lireJournal(ctx context.Context, q requeteur, premier, dernier int64) ([]journal.Entree, error) {
+	lignes, err := q.Query(ctx, "SELECT "+colonnesJournal+
 		" FROM journal_public WHERE numero BETWEEN $1 AND $2 ORDER BY numero", premier, dernier)
 	if err != nil {
 		return nil, err

@@ -34,7 +34,8 @@
   <div class="wrap">
     <span class="dot" aria-hidden="true"></span>
     <p><strong id="compteur">{{pluriel "accueil.compteur" .Compteur}}</strong>
-    {{- if lt .Compteur .Config.SeuilPublication}} {{tf "accueil.seuil" (nombre .Config.SeuilPublication)}}{{else}} {{t "accueil.seuil_atteint"}}{{end}}</p>
+    {{- if .SeuilAtteint}} {{t "accueil.seuil_atteint"}} <a href="/resultats">{{t "accueil.resultats.lien"}}</a>{{else}} {{tf "accueil.seuil" (nombre .Config.SeuilPublication)}}{{end}}
+    {{- if not .JourCompteur.IsZero}} <span class="muted">{{tf "accueil.compteur.publication" (date .JourCompteur)}}</span>{{end}}</p>
   </div>
 </section>
 {{end}}

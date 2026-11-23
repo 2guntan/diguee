@@ -1,0 +1,21 @@
+{{define "titre"}}{{t "resultats.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap">
+    <h1 class="display">{{t "resultats.titre"}}</h1>
+    {{- with .Resultats}}
+    {{- if .Aucune}}
+    <p class="lead">{{t "resultats.aucune"}}</p>
+    {{- else}}
+    {{- if not .Derniere}}
+    <p class="alerte">{{tf "resultats.ancienne" (date .Jour)}} <a href="/resultats">{{t "resultats.voir_derniere"}}</a></p>
+    {{- end}}
+    {{.Fragment}}
+    <p><a class="btn secondaire" href="{{.LienJSON}}">{{t "resultats.export"}}</a></p>
+    <p class="empreintes">{{t "resultats.empreinte"}} <code class="empreinte">{{.Empreinte}}</code></p>
+    {{- end}}
+    {{- end}}
+    <p>{{tf "resultats.rythme" (heure .Config.HeurePublication)}} <a href="/resultats/publications">{{t "resultats.archives.lien"}}</a> · <a href="/journal">{{t "resultats.journal.lien"}}</a> · <a href="/methodologie">{{t "resultats.methodologie.lien"}}</a></p>
+  </div>
+</section>
+{{end}}

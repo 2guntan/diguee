@@ -116,6 +116,11 @@ type Config struct {
 	TamponTaille     int           // DIGUEE_TAMPON_TAILLE : 20
 	TamponDelai      time.Duration // DIGUEE_TAMPON_DELAI : 30m
 	HeurePublication time.Duration // DIGUEE_HEURE_PUBLICATION : 06:00Z (décalage depuis minuit UTC)
+	// PopulationANSD est le chemin du fichier JSON de la composition de la
+	// population (ANSD), comparée à celle de l'échantillon (spec §8, règle
+	// 6). « À COMPLÉTER » : non disponible sur la page des résultats, et
+	// refusé en production.
+	PopulationANSD Texte // DIGUEE_POPULATION_ANSD
 
 	// Observatoire (§9).
 	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15
@@ -270,6 +275,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 	c.TamponTaille = l.entier("DIGUEE_TAMPON_TAILLE", 20)
 	c.TamponDelai = l.duree("DIGUEE_TAMPON_DELAI", "30m")
 	c.HeurePublication = l.heure("DIGUEE_HEURE_PUBLICATION", "06:00Z")
+	c.PopulationANSD = l.texte("DIGUEE_POPULATION_ANSD")
 
 	c.PreavisJours = l.entier("DIGUEE_PREAVIS_JOURS", 15)
 
@@ -282,7 +288,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 // Provisoires renvoie les noms des variables qui valent encore « À COMPLÉTER ».
 func (c *Config) Provisoires() []string {
 	var noms []string
-	for _, t := range []Texte{c.StructureNom, c.StructureAdresse, c.Contact, c.NumeroCDP, c.NumeroWhatsApp} {
+	for _, t := range []Texte{c.StructureNom, c.StructureAdresse, c.Contact, c.NumeroCDP, c.NumeroWhatsApp, c.PopulationANSD} {
 		if t.Provisoire() {
 			noms = append(noms, t.Variable)
 		}

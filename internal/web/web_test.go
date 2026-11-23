@@ -16,20 +16,35 @@ import (
 
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/publication"
 )
 
 // Question clé, formulation exacte de la spec §3 (Q3).
 const questionCle = "Êtes-vous favorable à une loi qui permettrait, pour les mandats futurs, " +
 	"de révoquer un président qui n'a pas respecté ses engagements de façon grave et mesurée\u00a0?"
 
+// compteurFixe imite le magasin des publications : une dernière publication
+// au compteur n (aucune si n vaut -1), avec ou sans résultats détaillés.
 type compteurFixe struct {
-	n   int64
-	err error
+	n         int
+	resultats bool
+	err       error
 }
 
-func (c compteurFixe) CompterReponses(context.Context) (int64, error) { return c.n, c.err }
+func (c compteurFixe) DernierResume(context.Context) (*publication.Resume, error) {
+	if c.err != nil || c.n < 0 {
+		return nil, c.err
+	}
+	return &publication.Resume{Jour: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC), Reponses: c.n, ResultatsPublies: c.resultats}, nil
+}
 
-func serveur(t *testing.T, env map[string]string, c Compteur) *Serveur {
+func (c compteurFixe) LirePublication(context.Context, time.Time) (*publication.Publication, error) {
+	return nil, c.err
+}
+
+func (c compteurFixe) Resumes(context.Context) ([]publication.Resume, error) { return nil, c.err }
+
+func serveur(t *testing.T, env map[string]string, c Publications) *Serveur {
 	t.Helper()
 	env["DIGUEE_POSTGRES_URL"] = "postgres://localhost/diguee"
 	cfg, err := config.Charger(func(k string) string { return env[k] })
@@ -41,7 +56,7 @@ func serveur(t *testing.T, env map[string]string, c Compteur) *Serveur {
 		t.Fatal(err)
 	}
 	s, err := Nouveau(Options{
-		Config: cfg, Catalogues: cs, Compteur: c,
+		Config: cfg, Catalogues: cs, Publications: c,
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32),
 		Journal:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Maintenant: func() time.Time { return time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC) },
@@ -66,7 +81,7 @@ func texte(corps string) string {
 }
 
 func TestAccueil(t *testing.T) {
-	s := serveur(t, map[string]string{}, compteurFixe{n: 987})
+	s := serveur(t, map[string]string{}, compteurFixe{n: 980})
 	res, corps := get(t, s, "/")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("statut %d", res.StatusCode)
@@ -75,7 +90,8 @@ func TestAccueil(t *testing.T) {
 	for _, attendu := range []string{
 		questionCle,
 		"Votre réponse est anonyme et définitive.",
-		"987 réponses reçues.",
+		"980 réponses reçues.",
+		"Chiffre de la publication du 1 décembre 2026, arrondi à la dizaine inférieure.",
 		"à partir de 1\u202f000 réponses",
 		`href="/methodologie"`, `href="/confidentialite"`,
 		"Version v0.0.0-test", strings.Repeat("ab", 32),
@@ -108,7 +124,7 @@ func TestCompteurSingulierEtSeuilAtteint(t *testing.T) {
 	if !strings.Contains(texte(corps), "0 réponse reçue.") {
 		t.Error("compteur à 0 mal écrit")
 	}
-	_, corps = get(t, serveur(t, map[string]string{"DIGUEE_SEUIL_PUBLICATION": "10"}, compteurFixe{n: 10}), "/")
+	_, corps = get(t, serveur(t, map[string]string{"DIGUEE_SEUIL_PUBLICATION": "10"}, compteurFixe{n: 10, resultats: true}), "/")
 	if !strings.Contains(texte(corps), "recalculés et publiés chaque jour") {
 		t.Error("le seuil atteint devrait être signalé")
 	}

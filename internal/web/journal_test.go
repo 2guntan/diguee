@@ -45,7 +45,7 @@ func serveurJournal(t *testing.T, n int) (*Serveur, *journal.Journal) {
 		}
 	}
 	s, err := Nouveau(Options{
-		Config: cfg, Catalogues: cs, Compteur: compteurFixe{},
+		Config: cfg, Catalogues: cs, Publications: compteurFixe{},
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32),
 		Journal:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		JournalPublic: j,

@@ -106,7 +106,7 @@ func nouveauBanc(t *testing.T) *banc {
 		t.Fatal(err)
 	}
 	srv, err := web.Nouveau(web.Options{
-		Config: cfg, Catalogues: cs, Compteur: b, Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32),
+		Config: cfg, Catalogues: cs, Publications: b, Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32),
 		Journal: journal, Equipe: esp,
 	})
 	if err != nil {

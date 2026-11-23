@@ -27,6 +27,7 @@ func complete(env string) map[string]string {
 		"DIGUEE_NUMERO_CDP":        "CDP-0000",
 		"DIGUEE_NUMERO_WHATSAPP":   "+221700000000",
 		"DIGUEE_OUVERTURE":         "2027-01-15",
+		"DIGUEE_POPULATION_ANSD":   "/etc/diguee/population-ansd.json",
 	}
 }
 
@@ -36,6 +37,16 @@ func TestProductionRefuseLesValeursACompleter(t *testing.T) {
 	err := Verifier(charger(t, m), &integration.Registre{})
 	if err == nil || !strings.Contains(err.Error(), "DIGUEE_NUMERO_CDP") {
 		t.Fatalf("refus attendu sur DIGUEE_NUMERO_CDP : %v", err)
+	}
+}
+
+// Les chiffres de population de l'ANSD (ticket #11) sont exigés en production.
+func TestProductionRefuseLaPopulationACompleter(t *testing.T) {
+	m := complete("production")
+	delete(m, "DIGUEE_POPULATION_ANSD")
+	err := Verifier(charger(t, m), &integration.Registre{})
+	if err == nil || !strings.Contains(err.Error(), "DIGUEE_POPULATION_ANSD vaut « À COMPLÉTER »") {
+		t.Fatalf("refus attendu sur DIGUEE_POPULATION_ANSD : %v", err)
 	}
 }
 
@@ -63,8 +74,8 @@ func TestDeveloppementToleré(t *testing.T) {
 	if err := Verifier(c, &r); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(Manques(c, &r)); n != 8 {
-		t.Errorf("%d manques, attendu 8 (7 valeurs et 1 intégration)", n)
+	if n := len(Manques(c, &r)); n != 9 {
+		t.Errorf("%d manques, attendu 9 (8 valeurs et 1 intégration)", n)
 	}
 }
 

@@ -123,6 +123,11 @@ func vueEntree(c *i18n.Catalogue, e journal.Entree) VueEntree {
 		case string:
 			ch.Valeur = y
 			ch.Code = len(y) == 64 && journal.EstHex(y)
+		case bool:
+			ch.Valeur = c.T("journal.valeur.faux")
+			if y {
+				ch.Valeur = c.T("journal.valeur.vrai")
+			}
 		case json.Number:
 			if n, err := y.Int64(); err == nil {
 				ch.Valeur = c.Nombre(n)

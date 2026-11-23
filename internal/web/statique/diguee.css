@@ -110,3 +110,16 @@ button.lien{background:none;border:0;padding:0;font:inherit;font-size:15px;color
 .qr{display:none;margin:24px 0}
 .qr svg{width:232px;height:232px;display:block}
 @media (min-width:900px) and (hover:hover) and (pointer:fine){.qr{display:block}}
+/* Résultats : tableaux sans script, croisements repliés dans <details> */
+.instantane h2{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:clamp(24px,2.4vw,32px);letter-spacing:-.02em;margin:48px 0 12px}
+.instantane h3{font-size:19px;line-height:1.4;margin:32px 0 8px}
+.instantane p{max-width:760px}
+.tableau{overflow-x:auto;margin:8px 0 16px}
+.tableau table{border-collapse:collapse;font-size:15px;line-height:1.4}
+.tableau caption{text-align:left;color:var(--muted);font-size:14px;padding-bottom:6px}
+.tableau th,.tableau td{padding:6px 10px;border-bottom:1px solid var(--rule);text-align:right;vertical-align:top}
+.tableau thead th{border-bottom:1px solid var(--ink);font-weight:600}
+.tableau th[scope=row],.tableau thead th:first-child{text-align:left;font-weight:600}
+details{border-top:1px solid var(--rule);padding:8px 0}
+summary{cursor:pointer;font-weight:600;color:var(--green)}
+.publications{padding-left:20px}

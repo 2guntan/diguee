@@ -8,6 +8,8 @@
 //	                        crée un compte de l'espace équipe (le premier
 //	                        administrateur, par exemple) et affiche une seule
 //	                        fois son mot de passe et son secret TOTP
+//	diguee publier          produit la publication quotidienne due (la dernière
+//	                        si elle manque) ; sans effet si elle existe déjà
 //	diguee verifier-journal [-attendu EMPREINTE]... [-precedent ANCIEN] <fichier.json|url>
 //	                        vérifie un export du journal public (sans configuration ni base)
 package main
@@ -36,6 +38,7 @@ import (
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
 	journalpublic "github.com/2guntan/diguee/internal/journal"
+	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
@@ -105,6 +108,12 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	q := questionnaire.Courant()
+	// Composition de la population (ANSD), comparée à celle de l'échantillon
+	// dans les publications ; nil tant qu'elle vaut « À COMPLÉTER ».
+	population, err := publication.ChargerPopulation(cfg.PopulationANSD)
+	if err != nil {
+		return err
+	}
 
 	if commande == "verifier-config" {
 		manques := garde.Manques(cfg, registre, q)
@@ -148,14 +157,35 @@ func lancer(args []string, journal *slog.Logger) error {
 	sessionsEquipe := equipe.NouvellesSessions(nil)
 	serviceEquipe := equipe.NouveauService(b, chiffreurTOTP, sessionsEquipe, nil)
 
+	catalogues, err := i18n.Charger()
+	if err != nil {
+		return err
+	}
+	// Publication quotidienne (spec §8) : chaque jour à
+	// DIGUEE_HEURE_PUBLICATION, sur les réponses des jours antérieurs ; une
+	// seule par jour, sous le verrou de la base.
+	rendu, err := web.RendreInstantane(catalogues, q)
+	if err != nil {
+		return err
+	}
+	planificateur := &publication.Planificateur{
+		Publieur: &publication.Publieur{
+			Magasin: b, Questionnaire: q, SeuilPublication: cfg.SeuilPublication, SeuilCase: cfg.SeuilCase,
+			Population: population, Rendu: rendu,
+		},
+		Heure: cfg.HeurePublication, Journal: journal,
+	}
+
 	switch commande {
 	case "migrer":
 		return nil
 	case "creer-membre":
 		return creerMembre(ctx, serviceEquipe, args[1:], os.Stdout)
+	case "publier":
+		return publier(ctx, planificateur, os.Stdout)
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, verifier-config, version, verifier-journal)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, verifier-config, version, verifier-journal)", commande)
 	}
 
 	// Journal public : une entrée « mise en production » à chaque démarrage sur
@@ -171,10 +201,15 @@ func lancer(args []string, journal *slog.Logger) error {
 			"version", version.Version(), "sha256", sha)
 	}
 
-	catalogues, err := i18n.Charger()
-	if err != nil {
-		return err
-	}
+	// Rattrapage : la publication due est produite avant d'ouvrir le serveur,
+	// pour que l'accueil affiche le compteur du jour. Un échec n'empêche pas
+	// de démarrer : la tâche quotidienne réessaie.
+	_, _ = planificateur.Executer(ctx)
+	planifiee := make(chan struct{})
+	go func() {
+		defer close(planifiee)
+		planificateur.Lancer(ctx)
+	}()
 	// Coupe-circuit financier du parcours SMS (spec §7, ticket #10), en
 	// mémoire : suspension automatique sur un pic ou au plafond horaire,
 	// réactivation après DIGUEE_SMS_REACTIVATION ou par un administrateur
@@ -248,7 +283,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		}
 	}
 	srv, err := web.Nouveau(web.Options{
-		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
+		Config: cfg, Catalogues: catalogues, Publications: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions, Questionnaire: q,
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
@@ -293,5 +328,28 @@ func lancer(args []string, journal *slog.Logger) error {
 		return errors.Join(errServeur, fmt.Errorf("écriture du tampon à l'arrêt (%d envois perdus) : %w", attente, err))
 	}
 	journal.Info("tampon écrit à l'arrêt", "envois", attente)
+	arreter()
+	<-planifiee
 	return errServeur
+}
+
+// publier lance à la main la publication quotidienne due ; sans effet si
+// elle existe déjà (celle du serveur, par exemple).
+func publier(ctx context.Context, pl *publication.Planificateur, sortie io.Writer) error {
+	r, err := pl.Executer(ctx)
+	if err != nil {
+		return err
+	}
+	p := r.Publication
+	etat := "déjà faite, inchangée"
+	if r.Nouvelle {
+		etat = "créée et inscrite au journal public"
+	}
+	detail := "compteur seul"
+	if p.ResultatsPublies {
+		detail = "résultats détaillés"
+	}
+	fmt.Fprintf(sortie, "publication du %s : %s (%d réponses, %s)\nsha256 de l'instantané %s\n",
+		p.Jour.Format(time.DateOnly), etat, p.Reponses, detail, p.Empreinte)
+	return nil
 }

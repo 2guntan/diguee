@@ -195,18 +195,25 @@ func TestMiseEnProductionAuDemarrage(t *testing.T) {
 			t.Fatalf("arrêt %d : %v", i, err)
 		}
 	}
-	es, err := jp.Toutes(ctx)
+	tous, err := jp.Toutes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(es) != 1 || es[0].Type != journal.MiseEnProduction {
-		t.Fatalf("%d entrées, une seule mise en production attendue : %+v", len(es), es)
+	// Chaque démarrage rattrape aussi la publication quotidienne due (ticket
+	// #11) : une seule sur les trois démarrages, inscrite après la mise en
+	// production.
+	es := duType(tous, journal.MiseEnProduction)
+	if len(es) != 1 || tous[0].Type != journal.MiseEnProduction {
+		t.Fatalf("%d entrées, une seule mise en production attendue : %+v", len(es), tous)
+	}
+	if ps := duType(tous, journal.PublicationQuotidienne); len(ps) != 1 || len(tous) != 2 {
+		t.Fatalf("%d publications quotidiennes sur %d entrées, une seule attendue", len(ps), len(tous))
 	}
 	var c journal.ContenuMiseEnProduction
 	if err := json.Unmarshal(es[0].Contenu, &c); err != nil || c.Version != version.Version() || c.SHA256Executable != sha {
 		t.Errorf("contenu %s (version %s, sha %s)", es[0].Contenu, version.Version(), sha)
 	}
-	if _, rap, err := journal.LireExport(strings.NewReader(export)); err != nil || rap.Entrees != 1 {
+	if _, rap, err := journal.LireExport(strings.NewReader(export)); err != nil || rap.Entrees != 2 {
 		t.Errorf("export servi : %v, %+v", err, rap)
 	}
 
@@ -219,9 +226,19 @@ func TestMiseEnProductionAuDemarrage(t *testing.T) {
 	if err := arreter(); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := jp.Compter(ctx); n != 3 {
-		t.Errorf("%d entrées, 3 attendues", n)
+	if n, _ := jp.Compter(ctx); n != 4 {
+		t.Errorf("%d entrées, 4 attendues", n)
 	}
+}
+
+func duType(es []journal.Entree, t journal.Type) []journal.Entree {
+	var r []journal.Entree
+	for _, e := range es {
+		if e.Type == t {
+			r = append(r, e)
+		}
+	}
+	return r
 }
 
 var reDefiAltcha = regexp.MustCompile(`data-altcha-algorithme="([^"]*)" data-altcha-defi="([^"]*)" data-altcha-max="([^"]*)" data-altcha-sel="([^"]*)" data-altcha-signature="([^"]*)"`)
