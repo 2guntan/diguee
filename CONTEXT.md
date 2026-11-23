@@ -34,6 +34,16 @@ _Avoid_ : OTP (en dehors du code), mot de passe
 Le contenu d'un questionnaire rempli, avec la région et la tranche d'âge déclarées, sans aucun identifiant de la personne.
 _Avoid_ : bulletin, vote
 
+### Résultats
+
+**Seuil de publication** :
+Le nombre de réponses (1 000) en dessous duquel seul le compteur global est affiché, sans aucune répartition.
+_Avoid_ : quorum
+
+**Publication quotidienne** :
+Le recalcul des résultats, une fois par jour à heure fixe, sur les réponses écrites jusqu'à la veille, consigné dans le journal public.
+_Avoid_ : résultats en direct, temps réel
+
 ### Cadre
 
 **Responsable du traitement** :

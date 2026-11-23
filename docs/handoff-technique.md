@@ -142,3 +142,4 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
   - compteurs en mémoire, sans IP dans les journaux ;
   - coupe-circuit : plafond journalier chez les fournisseurs, et suspension automatique du SMS au-delà de 3 fois le volume horaire moyen ;
   - fermes de SIM : risque accepté, avec la règle « une SIM, une participation » publiée et une surveillance des pics par préfixe ou par région.
+- **Publication** : en dessous de 1 000 réponses, seul le compteur global est affiché. Au-delà, les résultats sont recalculés une fois par jour sur les réponses jusqu'à la veille, et chaque publication est inscrite au journal public. Le compteur suit le même rythme quotidien. La FAQ du site a été corrigée (« mis à jour chaque jour » au lieu de « en continu »).
