@@ -26,8 +26,12 @@ _Avoid_ : numéro chiffré, hash
 La fin de la consultation, six mois après l'ouverture, où la clé et toutes les empreintes sont détruites.
 _Avoid_ : fin du vote
 
+**Vérification inversée** :
+La preuve qu'une personne détient un numéro, obtenue lorsqu'elle envoie à Diguee, par WhatsApp, un jeton affiché sur le site.
+_Avoid_ : OTP inversé, confirmation
+
 **Code** :
-Le code à usage unique envoyé au numéro, par WhatsApp en priorité, par SMS en secours, pour vérifier qu'il appartient bien à la personne.
+Le code à usage unique envoyé par Diguee au numéro, en secours de la vérification inversée (par WhatsApp, puis par SMS), pour vérifier qu'il appartient bien à la personne.
 _Avoid_ : OTP (en dehors du code), mot de passe
 
 **Profil** :
