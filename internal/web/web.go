@@ -57,6 +57,11 @@ type Options struct {
 	// JournalPublic sert /journal et /journal.json s'il est fourni.
 	JournalPublic *journal.Journal
 
+	// Equipe sert l'espace équipe sous /equipe s'il est fourni (paquet
+	// equipe) : routes, cookies et contrôles d'accès séparés des pages
+	// publiques, mêmes en-têtes de sécurité et même journal d'accès.
+	Equipe http.Handler
+
 	// Parcours de réponse : servi seulement si tous ces champs sont remplis.
 	Empreinteur   empreinte.Empreinteur
 	Tampon        *tampon.Tampon
@@ -112,6 +117,10 @@ func Nouveau(opt Options) (*Serveur, error) {
 	if opt.JournalPublic != nil {
 		s.mux.HandleFunc("GET /journal", s.journalPage)
 		s.mux.HandleFunc("GET /journal.json", s.journalExport)
+	}
+	if opt.Equipe != nil {
+		s.mux.Handle("/equipe", opt.Equipe)
+		s.mux.Handle("/equipe/", opt.Equipe)
 	}
 	s.mux.HandleFunc("GET /verifier", s.ouvert(s.verifierPage))
 	s.mux.HandleFunc("POST /verifier", s.ouvert(s.verifierNumero))

@@ -100,3 +100,8 @@ footer .links div{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:flex-
 .entree .params{border-top:0}
 .empreintes{font-size:14px;color:var(--muted)}
 .pagination{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;margin-top:40px}
+
+/* Espace équipe */
+.champ input[type=text],.champ input[type=password]{font:inherit;font-size:18px;padding:10px 14px;border:1px solid var(--ink);border-radius:6px;max-width:420px}
+form.en-ligne{display:inline;margin:0}
+button.lien{background:none;border:0;padding:0;font:inherit;font-size:15px;color:var(--ink);cursor:pointer;text-decoration:underline}

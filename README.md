@@ -19,10 +19,12 @@ Site : https://diguee.sn · Contact : @digueeboorla
 | `internal/questionnaire` | Questionnaire versionné (Q1 à Q8, profil, « 18 ans ou plus ») : codes stockés et clés du catalogue |
 | `internal/tampon` | Tampon mélangé (ADR 0003) : écriture groupée à 20 envois, à 30 minutes et à l'arrêt, doublons refusés |
 | `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` |
-| `internal/base` | PostgreSQL : connexion, migrations (`migrations/NNNN_nom.sql`), requêtes ; `basetest` pour les tests |
+| `internal/totp` | TOTP (RFC 6238, au-dessus de HOTP, RFC 4226) : SHA-1, 6 chiffres, 30 secondes, tolérance d'un pas, anti-rejeu ; bibliothèque standard seulement |
+| `internal/equipe` | Espace équipe `/equipe` (spec §9, ADR 0008) : comptes nominatifs, rôles cumulables, connexion mot de passe + TOTP, sessions de 8 h, CSRF, limitation des échecs, chiffrement des secrets TOTP (AES-256-GCM), audit interne ; `Espace.Gerer` et `MembreDe` pour les pages suivantes (ticket #13) |
+| `internal/base` | PostgreSQL : connexion, migrations (`migrations/NNNN_nom.sql`), requêtes (dont les comptes de l'équipe et leur audit) ; `basetest` pour les tests |
 | `internal/journal` | Journal public (ADR 0010) : entrées chaînées par SHA-256 sur le JSON canonique (RFC 8785, entiers seulement), API d'écriture `Inscrire` / `InscrireMiseEnProduction`, export JSON et vérification de la chaîne ; `journaltest` : magasin en mémoire pour les tests |
 | `internal/i18n` | Catalogues de textes : `fr` livré, `wo` et `ff` prévus |
-| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité, journal public `/journal` et son export `/journal.json`), feuille de style et polices auto-hébergées |
+| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité, journal public `/journal` et son export `/journal.json`), feuille de style et polices auto-hébergées ; monte l'espace équipe sous `/equipe` |
 | `internal/version` | Version et SHA-256 de l'exécutable, affichés au pied de page et inscrits au journal public à chaque mise en production |
 | `docs/` | Spécification, ADR, et [ce que le porteur doit fournir](docs/À%20faire%20par%20le%20porteur.md) |
 
@@ -51,9 +53,27 @@ go vet ./... && go test ./...
 make verifier-build
 ```
 
-Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`), comme l'unique entrée « mise en production » sur plusieurs redémarrages. T11 (modification d'une entrée ancienne détectée) est testé dans `internal/journal` et sur la commande `verifier-journal` ; le refus d'`UPDATE`/`DELETE` en SQL dans `internal/base/journal_test.go`. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
+Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`), comme l'unique entrée « mise en production » sur plusieurs redémarrages. T11 (modification d'une entrée ancienne détectée) est testé dans `internal/journal` et sur la commande `verifier-journal` ; le refus d'`UPDATE`/`DELETE` en SQL dans `internal/base/journal_test.go`. Les tests de l'espace équipe (`internal/equipe/espace_test.go`) passent par le serveur web complet : connexion refusée sans TOTP valide ou avec un code déjà utilisé, compte désactivé et sessions fermées, pages refusées sans session ou sans le bon rôle, CSRF, échecs limités, ni IP ni secret dans les journaux et la base ; les vecteurs des RFC 4226 et 6238 sont dans `internal/totp`. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
 
-Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`, et `diguee verifier-journal` (ci-dessous).
+Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`, `diguee creer-membre` (espace équipe, ci-dessous) et `diguee verifier-journal` (ci-dessous).
+
+### Espace équipe
+
+L'espace `/equipe` (spec §9, ADR 0008) a ses propres routes, gabarits (`internal/equipe/gabarits`, textes dans le catalogue `fr` sous `equipe.*`) et cookies, limités à `/equipe`. Chaque membre a un compte nominatif et un ou plusieurs rôles : **rédacteur**, **relecteur**, **administrateur**. La connexion demande l'identifiant, un mot de passe tiré par la plateforme (20 signes, 100 bits, empreinte PBKDF2-SHA-256) et le code TOTP de l'application d'authentification ; jamais de SMS. Le secret TOTP est chiffré en AES-256-GCM avec `DIGUEE_CLE_TOTP`, lié à l'ID du membre. Un code déjà accepté, ou plus ancien, est refusé ; après un redémarrage, les codes du pas de démarrage aussi.
+
+- Session de 8 heures fixes depuis la connexion, en mémoire seulement (un redémarrage ferme les sessions). Le compte et ses rôles sont relus en base à chaque requête : un changement de rôle vaut tout de suite, et un compte désactivé perd aussitôt ses sessions.
+- Seul un administrateur crée un compte, change ses rôles, réinitialise son accès (nouveau mot de passe et nouveau secret, sessions fermées) ou le désactive (définitif, la base refuse la réactivation et la suppression). Il reste toujours au moins un administrateur actif, et personne ne désactive son propre compte.
+- Formulaires protégés contre le CSRF : jeton de session dans un champ caché, jeton lié à un cookie pour la connexion, et refus des requêtes venues d'un autre site (`Origin`, `Sec-Fetch-Site`).
+- Échecs de connexion limités en mémoire : 5 par identifiant en 15 minutes, 20 par adresse en une heure (l'adresse est remplacée par un HMAC à sel quotidien et n'est jamais conservée ni journalisée).
+- Audit interne : la table `audit_equipe`, en ajout seul, garde au jour près chaque création, changement de rôles, réinitialisation, désactivation et connexion, avec son auteur. Ces actions ne sont pas publiques, donc pas au journal public.
+
+Pages suivantes (ticket #13) : `Espace.Gerer("GET /equipe/…", gestionnaire, equipe.Redacteur)` vérifie la session, le compte actif, le rôle (un des rôles donnés) et, hors GET, le jeton CSRF (champ `csrf`, valeur `equipe.JetonCSRFDe(ctx)`) ; `equipe.MembreDe(ctx)` donne le membre connecté (`ID`, `Identifiant`, `Nom`, `Roles`, `A(role)`).
+
+Créer un compte depuis le serveur (le premier administrateur, par exemple) ; le mot de passe, le secret TOTP et l'URI `otpauth://` ne s'affichent qu'une fois :
+
+```sh
+diguee creer-membre -identifiant awa.diop -nom "Awa Diop" -roles administrateur,redacteur,relecteur
+```
 
 ### Journal public
 
@@ -80,6 +100,7 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_ADRESSE` | `:8080` | |
 | `DIGUEE_POSTGRES_URL` | obligatoire, secret | |
 | `DIGUEE_EMPREINTEUR` | `fake` (HMAC de développement, interdit en production) ; `ovh` au ticket #5 | |
+| `DIGUEE_CLE_TOTP` | absente : clé de développement (intégration `chiffrement_totp` en mode `fake`, interdite en production) ; secret, 64 chiffres hexadécimaux | |
 | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | À COMPLÉTER | (ADR 0005) |
 | `DIGUEE_CONTACT` | À COMPLÉTER | |
 | `DIGUEE_NUMERO_CDP` | À COMPLÉTER | `NUMERO_CDP` |

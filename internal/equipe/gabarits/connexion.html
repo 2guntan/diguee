@@ -1,0 +1,26 @@
+{{define "titre"}}{{t "equipe.connexion.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.connexion.titre"}}</h1>
+    <p>{{t "equipe.connexion.chapeau"}}</p>
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
+    <form class="formulaire" method="post" action="/equipe/connexion">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="champ">
+        <label for="identifiant">{{t "equipe.connexion.identifiant"}}</label>
+        <input id="identifiant" name="identifiant" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" required value="{{.Identifiant}}">
+      </div>
+      <div class="champ">
+        <label for="mot_de_passe">{{t "equipe.connexion.mot_de_passe"}}</label>
+        <input id="mot_de_passe" name="mot_de_passe" type="password" autocomplete="current-password" maxlength="64" required>
+      </div>
+      <div class="champ">
+        <label for="code">{{t "equipe.connexion.code"}}</label>
+        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required>
+        <p class="aide">{{t "equipe.connexion.code.aide"}}</p>
+      </div>
+      <button class="btn" type="submit">{{t "equipe.connexion.bouton"}}</button>
+    </form>
+    <p class="note">{{t "equipe.connexion.note"}}</p>
+{{end}}

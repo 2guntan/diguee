@@ -103,3 +103,22 @@ func TestClotureAvantOuvertureRefusee(t *testing.T) {
 		t.Errorf("erreur attendue sur DIGUEE_CLOTURE : %v", err)
 	}
 }
+
+func TestCleTOTP(t *testing.T) {
+	c, err := Charger(env(minimal()))
+	if err != nil || c.CleTOTP != nil {
+		t.Fatalf("sans DIGUEE_CLE_TOTP, la clé doit être absente : %v %v", c, err)
+	}
+	m := minimal()
+	m["DIGUEE_CLE_TOTP"] = strings.Repeat("0a", 32)
+	if c, err = Charger(env(m)); err != nil || len(c.CleTOTP) != 32 || c.CleTOTP[0] != 0x0a {
+		t.Fatalf("clé valide refusée : %v", err)
+	}
+	for _, v := range []string{"zz", strings.Repeat("0a", 16), strings.Repeat("secret", 11)} {
+		m["DIGUEE_CLE_TOTP"] = v
+		_, err := Charger(env(m))
+		if err == nil || !strings.Contains(err.Error(), "DIGUEE_CLE_TOTP") || strings.Contains(err.Error(), v) {
+			t.Errorf("%q : erreur attendue, sans la valeur : %v", v, err)
+		}
+	}
+}

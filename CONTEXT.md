@@ -81,6 +81,10 @@ Le membre de l'équipe qui saisit un engagement ou propose un nouveau statut.
 Le membre de l'équipe, distinct du rédacteur, qui valide la saisie avant sa publication.
 _Avoid_ : modérateur, validateur
 
+**Administrateur** :
+Le membre de l'équipe qui crée les comptes de l'espace équipe, change leurs rôles ou les désactive ; ce rôle se cumule avec ceux de rédacteur et de relecteur.
+_Avoid_ : super-utilisateur, propriétaire
+
 **Préavis** :
 Le délai de 15 jours laissé à l'élu, après envoi du dossier, avant la publication d'un statut « non tenu » ou « partiel ».
 

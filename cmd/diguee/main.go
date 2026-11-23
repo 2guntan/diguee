@@ -4,6 +4,10 @@
 //	diguee migrer           applique les migrations puis s'arrête
 //	diguee verifier-config  affiche ce qui manque pour la production
 //	diguee version          affiche la version et le SHA-256 de l'exécutable
+//	diguee creer-membre -identifiant ID -nom NOM [-roles R1,R2]
+//	                        crée un compte de l'espace équipe (le premier
+//	                        administrateur, par exemple) et affiche une seule
+//	                        fois son mot de passe et son secret TOTP
 //	diguee verifier-journal [-attendu EMPREINTE]... [-precedent ANCIEN] <fichier.json|url>
 //	                        vérifie un export du journal public (sans configuration ni base)
 package main
@@ -24,6 +28,7 @@ import (
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
+	"github.com/2guntan/diguee/internal/equipe"
 	"github.com/2guntan/diguee/internal/garde"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
@@ -78,6 +83,10 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	chiffreurTOTP, err := equipe.ConstruireChiffreur(cfg, registre)
+	if err != nil {
+		return err
+	}
 	q := questionnaire.Courant()
 
 	if commande == "verifier-config" {
@@ -119,12 +128,17 @@ func lancer(args []string, journal *slog.Logger) error {
 		journal.Info("migration appliquée", "migration", m)
 	}
 
+	sessionsEquipe := equipe.NouvellesSessions(nil)
+	serviceEquipe := equipe.NouveauService(b, chiffreurTOTP, sessionsEquipe, nil)
+
 	switch commande {
 	case "migrer":
 		return nil
+	case "creer-membre":
+		return creerMembre(ctx, serviceEquipe, args[1:], os.Stdout)
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, verifier-config, version, verifier-journal)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, verifier-config, version, verifier-journal)", commande)
 	}
 
 	// Journal public : une entrée « mise en production » à chaque démarrage sur
@@ -144,6 +158,12 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	espaceEquipe, err := equipe.NouvelEspace(equipe.OptionsEspace{
+		Service: serviceEquipe, Sessions: sessionsEquipe, Magasin: b, Catalogues: catalogues, Journal: journal,
+	})
+	if err != nil {
+		return err
+	}
 	// Tampon mélangé (ADR 0003) : écrit à TAMPON_TAILLE envois, au plus tard
 	// TAMPON_DELAI après le premier, et à l'arrêt propre ci-dessous.
 	tp := tampon.Nouveau(tampon.Options{
@@ -153,6 +173,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: session.NouveauMagasin(), Questionnaire: q,
+		Equipe: espaceEquipe,
 		// Seule la vérification factice existe pour l'instant (tickets #5, #6,
 		// #9 et #10 pour les vraies) ; elle n'est jamais servie en production.
 		VerificationFactice: cfg.Env != config.Production,

@@ -1,0 +1,20 @@
+{{define "titre"}}{{t "equipe.audit.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.audit.titre"}}</h1>
+    <p>{{t "equipe.audit.chapeau"}}</p>
+    {{- range .Audit}}
+    <div class="entree">
+      <h3>{{tf "equipe.audit.entree" .Numero (action .Type)}}</h3>
+      <dl class="params">
+        <div><dt>{{t "equipe.audit.jour"}}</dt><dd>{{jour .Jour}}</dd></div>
+        <div><dt>{{t "equipe.audit.acteur"}}</dt><dd>{{if .ActeurIdentifiant}}{{.ActeurIdentifiant}}{{else}}{{t "equipe.audit.commande"}}{{end}}</dd></div>
+        <div><dt>{{t "equipe.audit.cible"}}</dt><dd>{{.CibleIdentifiant}}</dd></div>
+        {{- if .Roles}}
+        <div><dt>{{t "equipe.membre.roles"}}</dt><dd>{{range $i, $r := .Roles}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{role $r}}{{end}}</dd></div>
+        {{- end}}
+      </dl>
+    </div>
+    {{- else}}
+    <p>{{t "equipe.audit.vide"}}</p>
+    {{- end}}
+{{end}}

@@ -1,0 +1,40 @@
+{{define "base"}}<!doctype html>
+<html lang="{{langue}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{template "titre" .}} · {{t "equipe.nom"}}</title>
+<link rel="icon" type="image/svg+xml" href="/statique/logo.svg">
+<link rel="stylesheet" href="/statique/diguee.css">
+</head>
+<body class="equipe">
+<a class="evitement" href="#contenu">{{t "nav.aller_au_contenu"}}</a>
+<header class="rule-b">
+  <div class="wrap">
+    <a class="logo" href="/equipe/" aria-label="{{t "equipe.nav.accueil"}}"><span>{{t "equipe.nom"}}</span></a>
+    {{- with .Membre}}
+    <nav aria-label="{{t "equipe.nav.libelle"}}">
+      <a href="/equipe/">{{t "equipe.nav.accueil"}}</a>
+      {{- if a . "administrateur"}}
+      <a href="/equipe/membres">{{t "equipe.nav.membres"}}</a>
+      <a href="/equipe/audit">{{t "equipe.nav.audit"}}</a>
+      {{- end}}
+      <form class="en-ligne" method="post" action="/equipe/deconnexion">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button class="lien" type="submit">{{t "equipe.nav.deconnexion"}}</button>
+      </form>
+    </nav>
+    {{- end}}
+  </div>
+</header>
+<main id="contenu">
+<section class="page">
+  <div class="wrap texte">
+{{template "contenu" .}}
+  </div>
+</section>
+</main>
+</body>
+</html>
+{{end}}

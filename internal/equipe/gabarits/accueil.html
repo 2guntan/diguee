@@ -1,0 +1,11 @@
+{{define "titre"}}{{t "equipe.accueil.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.accueil.titre"}}</h1>
+    <p>{{tf "equipe.accueil.bonjour" .Membre.Nom}}</p>
+    <dl class="params">
+      <div><dt>{{t "equipe.membre.identifiant"}}</dt><dd>{{.Membre.Identifiant}}</dd></div>
+      <div><dt>{{t "equipe.membre.roles"}}</dt><dd>{{range $i, $r := .Membre.Roles}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{role $r}}{{end}}</dd></div>
+    </dl>
+    <p class="note">{{t "equipe.accueil.session"}}</p>
+    <p class="note">{{t "equipe.accueil.a_venir"}}</p>
+{{end}}

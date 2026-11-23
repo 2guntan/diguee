@@ -8,6 +8,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -58,6 +59,11 @@ type Config struct {
 	// Intégrations externes : « fake » désigne une fausse implémentation,
 	// interdite en production (paquet garde).
 	Empreinteur string // DIGUEE_EMPREINTEUR : fake (défaut, HMAC de développement) ; ovh au ticket #5
+
+	// CleTOTP chiffre les secrets TOTP de l'espace équipe (AES-256-GCM). Secret,
+	// 32 octets. Vide : clé de développement écrite dans le code, déclarée
+	// « fake » dans le registre des intégrations, donc refusée en production.
+	CleTOTP []byte // DIGUEE_CLE_TOTP : 64 chiffres hexadécimaux
 
 	// Responsable du traitement (ADR 0005) et contacts.
 	StructureNom     Texte // DIGUEE_STRUCTURE_NOM
@@ -110,6 +116,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 	}
 
 	c.Empreinteur = l.choix("DIGUEE_EMPREINTEUR", "fake", "fake")
+	c.CleTOTP = l.cle("DIGUEE_CLE_TOTP", 32)
 
 	c.StructureNom = l.texte("DIGUEE_STRUCTURE_NOM")
 	c.StructureAdresse = l.texte("DIGUEE_STRUCTURE_ADRESSE")
@@ -228,6 +235,21 @@ func (l *lecteur) date(nom, defaut string) Date {
 		return Date{Variable: nom, provisoire: true}
 	}
 	return Date{Variable: nom, Jour: j}
+}
+
+// cle lit un secret de n octets écrit en hexadécimal. Absente, elle vaut nil.
+// Le message d'erreur ne cite jamais la valeur.
+func (l *lecteur) cle(nom string, n int) []byte {
+	v := strings.TrimSpace(l.getenv(nom))
+	if v == "" {
+		return nil
+	}
+	b, err := hex.DecodeString(v)
+	if err != nil || len(b) != n {
+		l.erreur(nom, fmt.Errorf("attendu %d chiffres hexadécimaux (%d octets, par exemple : openssl rand -hex %d)", 2*n, n, n))
+		return nil
+	}
+	return b
 }
 
 func (l *lecteur) entier(nom string, defaut int) int {

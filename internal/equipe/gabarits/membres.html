@@ -1,0 +1,65 @@
+{{define "titre"}}{{t "equipe.membres.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.membres.titre"}}</h1>
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
+    {{- if .Message}}
+    <p class="alerte" role="status">{{t .Message}}</p>
+    {{- end}}
+    {{- range .Membres}}
+    <div class="entree">
+      <h3>{{.Nom}}</h3>
+      <dl class="params">
+        <div><dt>{{t "equipe.membre.identifiant"}}</dt><dd>{{.Identifiant}}</dd></div>
+        <div><dt>{{t "equipe.membre.etat"}}</dt><dd>{{if .Actif}}{{t "equipe.membre.actif"}}{{else}}{{t "equipe.membre.inactif"}}{{end}}</dd></div>
+        <div><dt>{{t "equipe.membre.roles"}}</dt><dd>{{range $i, $r := .Roles}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{role $r}}{{end}}</dd></div>
+      </dl>
+      {{- if .Actif}}
+      {{- $m := .}}
+      <form class="formulaire" method="post" action="/equipe/membres/{{.ID}}/roles">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <fieldset class="champ">
+          <legend>{{t "equipe.membres.changer_roles"}}</legend>
+          {{- range $.Roles}}
+          <label class="choix"><input type="checkbox" name="roles" value="{{.}}"{{if a $m .}} checked{{end}}> {{role .}}</label>
+          {{- end}}
+        </fieldset>
+        <button class="btn secondaire" type="submit">{{t "equipe.membres.enregistrer_roles"}}</button>
+      </form>
+      <form class="formulaire" method="post" action="/equipe/membres/{{.ID}}/reinitialiser">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button class="btn secondaire" type="submit">{{t "equipe.membres.reinitialiser"}}</button>
+      </form>
+      {{- if ne .ID $.Membre.ID}}
+      <form class="formulaire" method="post" action="/equipe/membres/{{.ID}}/desactiver">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button class="btn secondaire" type="submit">{{t "equipe.membres.desactiver"}}</button>
+        <p class="aide">{{t "equipe.membres.desactiver.aide"}}</p>
+      </form>
+      {{- end}}
+      {{- end}}
+    </div>
+    {{- end}}
+
+    <h2>{{t "equipe.membres.creer"}}</h2>
+    <form class="formulaire" method="post" action="/equipe/membres">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="champ">
+        <label for="identifiant">{{t "equipe.membre.identifiant"}}</label>
+        <input id="identifiant" name="identifiant" type="text" autocapitalize="none" spellcheck="false" maxlength="40" required>
+        <p class="aide">{{t "equipe.membres.identifiant.aide"}}</p>
+      </div>
+      <div class="champ">
+        <label for="nom">{{t "equipe.membre.nom"}}</label>
+        <input id="nom" name="nom" type="text" maxlength="100" required>
+      </div>
+      <fieldset class="champ">
+        <legend>{{t "equipe.membre.roles"}}</legend>
+        {{- range .Roles}}
+        <label class="choix"><input type="checkbox" name="roles" value="{{.}}"> {{role .}}</label>
+        {{- end}}
+      </fieldset>
+      <button class="btn" type="submit">{{t "equipe.membres.creer.bouton"}}</button>
+    </form>
+{{end}}
