@@ -25,6 +25,7 @@ import (
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/base/basetest"
+	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
@@ -70,6 +71,9 @@ type banc struct {
 	surveillance *antifraude.Surveillance
 	ralentisseur *antifraude.Ralentisseur
 	attentes     *attentes
+	codes        *codes.Verificateur
+	console      *codes.Console
+	sortieCodes  *journalSur // console des codes (mode « fake »), hors du journal
 }
 
 // attentes note les délais du ralentisseur sans dormir.
@@ -154,18 +158,35 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Code de secours : la console écrit dans un tampon du test, et la
+	// limite par empreinte est la même instance que celle du vérificateur.
+	sortieCodes := &journalSur{}
+	console, err := codes.NouvelleConsole("WhatsApp", sortieCodes, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wa.Envoyeur = console
+	cv, err := codes.Nouveau(codes.Options{
+		Canal: "WhatsApp", Envoyeur: console, Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+		Limiteur: limite, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
+		Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Maintenant: h.maintenant, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	s, err := Nouveau(Options{
 		Config: cfg, Catalogues: cs, Compteur: b,
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
 		Maintenant:  h.maintenant,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
-		WhatsApp: wa, Verificateur: v, Altcha: captcha, Ralentisseur: ralentisseur,
+		WhatsApp: wa, Verificateur: v, Altcha: captcha, Ralentisseur: ralentisseur, Codes: cv,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j, whatsapp: wa, verificateur: v, sessions: sessions, horloge: h,
-		altcha: captcha, limite: limite, surveillance: surveillance, ralentisseur: ralentisseur, attentes: att}
+		altcha: captcha, limite: limite, surveillance: surveillance, ralentisseur: ralentisseur, attentes: att,
+		codes: cv, console: console, sortieCodes: sortieCodes}
 }
 
 func (b *banc) compter(t *testing.T) (participations, reponses int) {
@@ -586,13 +607,23 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 	pages["sans javascript"] = n3.get("/verifier/sans-javascript")
 	pages["sms provisoire"] = n3.get("/verifier/sms")
 	pages["captcha refusé"] = n3.post("/verifier", url.Values{altcha.Champ: {"x"}})
+	// Code de secours (ticket #9).
+	n4 := &navigateur{t: t, h: b.srv}
+	pages["code"] = n4.get("/verifier/code")
+	_, numeroCode := numeroDeTest(12)
+	codeEnvoye(t, b, n4, numeroCode)
+	pages["code saisie"] = n4.get("/verifier/code/saisie")
+	pages["code faux"] = saisir(n4, faux(b.console.Dernier()))
+	pages["code numéro refusé"] = demanderCode(t, &navigateur{t: t, h: b.srv}, "12")
+	b.horloge.avancer(11 * time.Minute)
+	pages["code expiré"] = n4.get("/verifier/code/saisie")
 	for nom, p := range pages {
 		// Deux pages seulement chargent un script, servi depuis le domaine,
 		// et leur CSP est la seule à l'autoriser : la page du jeton
 		// (interrogation) et la page de vérification (captcha ALTCHA, sans
 		// connexion au serveur).
 		script := map[string]string{"jeton": "verifier.js", "jeton pas encore reçu": "verifier.js",
-			"verifier": "altcha.js", "captcha refusé": "altcha.js"}[nom]
+			"verifier": "altcha.js", "captcha refusé": "altcha.js", "code": "altcha.js", "code numéro refusé": "altcha.js"}[nom]
 		avecScript := script == "verifier.js"
 		poids := len(p.corps) + len(css) + len(logo)
 		switch script {
@@ -656,6 +687,11 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 		"captcha refusé":        "La vérification anti-robot n'a pas abouti.",
 		"sans javascript":       "Vérifier mon numéro par SMS",
 		"sms provisoire":        "La vérification par SMS n'est pas encore ouverte.",
+		"code":                  "Recevoir mon code",
+		"code saisie":           "Il vous reste 5 essais.",
+		"code faux":             "Il vous reste 4 essais.",
+		"code numéro refusé":    "n'est pas un numéro mobile sénégalais",
+		"code expiré":           "Ce code n'est plus valable.",
 	} {
 		if !strings.Contains(texte(pages[nom].corps), attendu) {
 			t.Errorf("%s : %q attendu", nom, attendu)

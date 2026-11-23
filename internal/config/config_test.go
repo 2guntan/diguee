@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -148,7 +149,8 @@ func TestWhatsApp(t *testing.T) {
 	m["DIGUEE_WHATSAPP"] = "meta"
 	m["DIGUEE_META_SECRET_APP"] = "court"
 	_, err = Charger(env(m))
-	for _, attendu := range []string{"DIGUEE_META_ID_NUMERO est obligatoire", "DIGUEE_META_SECRET_APP est trop court", "DIGUEE_META_JETON_WEBHOOK est obligatoire"} {
+	for _, attendu := range []string{"DIGUEE_META_ID_NUMERO est obligatoire", "DIGUEE_META_SECRET_APP est trop court", "DIGUEE_META_JETON_WEBHOOK est obligatoire",
+		"DIGUEE_META_JETON_ACCES est obligatoire", "DIGUEE_META_MODELE_CODE est obligatoire"} {
 		if err == nil || !strings.Contains(err.Error(), attendu) {
 			t.Errorf("erreur attendue %q : %v", attendu, err)
 		}
@@ -159,9 +161,20 @@ func TestWhatsApp(t *testing.T) {
 	m["DIGUEE_META_ID_NUMERO"] = "106540352242922"
 	m["DIGUEE_META_SECRET_APP"] = "0123456789abcdef0123456789abcdef"
 	m["DIGUEE_META_JETON_WEBHOOK"] = "jeton-de-verification-du-webhook"
+	m["DIGUEE_META_JETON_ACCES"] = strings.Repeat("EAAB", 10)
+	m["DIGUEE_META_MODELE_CODE"] = "diguee_code"
 	c, err = Charger(env(m))
-	if err != nil || c.Meta.IDNumero != "106540352242922" {
-		t.Fatalf("meta : %v", err)
+	if err != nil || c.Meta.IDNumero != "106540352242922" || c.Meta.LangueModele != "fr" || c.Meta.VersionAPI != "v23.0" ||
+		c.Meta.Delai != 10*time.Second || c.Meta.ModeleCode != "diguee_code" {
+		t.Fatalf("meta : %v %+v", err, c.Meta)
+	}
+	for nom, valeur := range map[string]string{"DIGUEE_META_MODELE_CODE": "Code Diguee", "DIGUEE_META_LANGUE_MODELE": "français",
+		"DIGUEE_META_VERSION_API": "23", "DIGUEE_META_JETON_ACCES": "court"} {
+		m2 := maps.Clone(m)
+		m2[nom] = valeur
+		if _, err := Charger(env(m2)); err == nil || !strings.Contains(err.Error(), nom) {
+			t.Errorf("%s=%q accepté : %v", nom, valeur, err)
+		}
 	}
 	m["DIGUEE_WHATSAPP"] = "bot"
 	if _, err := Charger(env(m)); err == nil {

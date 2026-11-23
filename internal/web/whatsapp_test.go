@@ -252,6 +252,7 @@ func TestNotificationsNonPertinentes(t *testing.T) {
 func TestModeMetaSansSimulation(t *testing.T) {
 	b := nouveauBanc(t, map[string]string{
 		"DIGUEE_WHATSAPP": "meta", "DIGUEE_META_ID_NUMERO": "123456789012345",
+		"DIGUEE_META_JETON_ACCES": "jeton-d-acces-graph-de-test-0123456789", "DIGUEE_META_MODELE_CODE": "diguee_code",
 		"DIGUEE_META_SECRET_APP": "0123456789abcdef0123456789abcdef", "DIGUEE_META_JETON_WEBHOOK": "un-jeton-de-verification-long",
 	})
 	n := &navigateur{t: t, h: b.srv}

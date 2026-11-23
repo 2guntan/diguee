@@ -5,21 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
+	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/integration"
 )
 
-// Integration réunit les réglages de l'API Cloud de Meta utiles au webhook.
-// En mode « fake », ce sont des valeurs de développement publiques : la
-// simulation (Simuler) signe avec elles, et le mode est refusé en production.
-// Le jeton d'accès à l'API Graph (envoi du code de secours) arrivera avec le
-// ticket #9.
+// Integration réunit les réglages de l'API Cloud de Meta : le webhook de la
+// vérification inversée et l'envoi du code de secours (spec §5.2). En mode
+// « fake », ce sont des valeurs de développement publiques : la simulation
+// (Simuler) signe avec elles, les codes sont écrits dans la console
+// (codes.Console), et le mode est refusé en production.
 type Integration struct {
 	Mode         string // fake ou meta
 	IDNumero     string // phone_number_id attendu dans les notifications
 	SecretApp    []byte // vérifie X-Hub-Signature-256 ; secret
 	JetonWebhook string // hub.verify_token de la poignée de main ; secret
+	// Envoyeur envoie le code de secours : EnvoyeurMeta en mode « meta »,
+	// codes.Console en mode « fake » (nil si DIGUEE_ENV=production : la
+	// console ne peut pas exister en production).
+	Envoyeur codes.Envoyeur
 }
 
 // Valeurs du mode « fake ». Elles sont publiques et ne protègent rien.
@@ -45,9 +51,24 @@ func Construire(c *config.Config, r *integration.Registre) (*Integration, error)
 	case integration.ModeFake:
 		i = &Integration{Mode: c.WhatsApp, IDNumero: idNumeroDeveloppement,
 			SecretApp: []byte(secretDeveloppement), JetonWebhook: jetonWebhookDeveloppement}
+		if c.Env != config.Production {
+			console, err := codes.NouvelleConsole("WhatsApp", os.Stderr, false)
+			if err != nil {
+				return nil, err
+			}
+			i.Envoyeur = console
+		}
 	case "meta":
 		i = &Integration{Mode: c.WhatsApp, IDNumero: c.Meta.IDNumero,
 			SecretApp: []byte(c.Meta.SecretApp), JetonWebhook: c.Meta.JetonWebhook}
+		e, err := NouvelEnvoyeurMeta(OptionsEnvoyeurMeta{
+			VersionAPI: c.Meta.VersionAPI, IDNumero: c.Meta.IDNumero, JetonAcces: c.Meta.JetonAcces,
+			Modele: c.Meta.ModeleCode, Langue: c.Meta.LangueModele, Delai: c.Meta.Delai,
+		})
+		if err != nil {
+			return nil, err
+		}
+		i.Envoyeur = e
 	default:
 		return nil, fmt.Errorf("DIGUEE_WHATSAPP : mode %q non pris en charge", c.WhatsApp)
 	}

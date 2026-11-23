@@ -1,0 +1,30 @@
+{{define "titre"}}{{t "code.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <p class="kicker">{{t "parcours.etape.verification"}}</p>
+    <h1 class="display">{{t "code.titre"}}</h1>
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
+    <p>{{tf "code.principe" (duree .DureeCode)}}</p>
+    <form class="formulaire" method="post" action="/verifier/code"
+      {{- with .Defi}} data-altcha-algorithme="{{.Algorithm}}" data-altcha-defi="{{.Challenge}}" data-altcha-max="{{.MaxNumber}}" data-altcha-sel="{{.Salt}}" data-altcha-signature="{{.Signature}}"{{end}}
+      data-altcha-calcul="{{t "verif.captcha.calcul"}}" data-altcha-pret="{{t "verif.captcha.pret"}}" data-altcha-impossible="{{t "verif.captcha.impossible"}}">
+      <div class="champ">
+        <label for="numero">{{t "code.numero"}}</label>
+        <input id="numero" name="numero" type="tel" inputmode="tel" autocomplete="tel" maxlength="24" required>
+        <p class="aide">{{t "code.numero.aide"}}</p>
+      </div>
+      <input type="hidden" name="altcha" value="">
+      <button class="btn" type="submit">{{t "code.bouton"}}</button>
+      <p class="aide" id="altcha-etat" aria-live="polite"></p>
+    </form>
+    <noscript><p class="alerte">{{t "verif.captcha.sans_js"}} <a href="/verifier/sans-javascript">{{t "verif.captcha.sans_js.lien"}}</a></p></noscript>
+    <p class="note">{{t "verif.captcha.explication"}}</p>
+    <p class="note">{{t "verif.oubli"}}</p>
+    <p class="note">{{t "code.meta"}}</p>
+    <p><a href="/verifier">{{t "code.retour"}}</a></p>
+  </div>
+</section>
+{{end}}

@@ -28,6 +28,7 @@ import (
 	"github.com/2guntan/diguee/internal/altcha"
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
+	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/equipe"
@@ -197,6 +198,22 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Code envoyé par WhatsApp, en secours (spec §5.2) : même limite par
+	// empreinte, même surveillance et même détection des doublons que la
+	// vérification inversée. Le parcours SMS (ticket #10) construira ici son
+	// propre codes.Verificateur, avec la même limiteEmpreinte.
+	var codesWhatsApp *codes.Verificateur
+	if integrationWhatsApp.Envoyeur != nil {
+		codesWhatsApp, err = codes.Nouveau(codes.Options{
+			Canal: "WhatsApp", Envoyeur: integrationWhatsApp.Envoyeur,
+			Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+			Limiteur: limiteEmpreinte, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
+			Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Journal: journal,
+		})
+		if err != nil {
+			return err
+		}
+	}
 	srv, err := web.Nouveau(web.Options{
 		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
@@ -204,7 +221,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
 		// Captcha ALTCHA ; la limite par adresse (DIGUEE_IP_PAR_HEURE) est
 		// construite par le serveur web.
-		Altcha: captcha,
+		Altcha: captcha, Codes: codesWhatsApp,
 	})
 	if err != nil {
 		return err

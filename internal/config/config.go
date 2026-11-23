@@ -139,12 +139,23 @@ type Meta struct {
 	IDNumero     string // DIGUEE_META_ID_NUMERO : identifiant du numéro de téléphone (phone_number_id)
 	SecretApp    string // DIGUEE_META_SECRET_APP : secret de l'application, vérifie X-Hub-Signature-256 ; secret
 	JetonWebhook string // DIGUEE_META_JETON_WEBHOOK : jeton de vérification du webhook (hub.verify_token) ; secret
+
+	// Envoi du code de secours (spec §5.2) par l'API Graph.
+	JetonAcces   string        // DIGUEE_META_JETON_ACCES : jeton d'accès permanent (utilisateur système) ; secret
+	ModeleCode   string        // DIGUEE_META_MODELE_CODE : nom du modèle de message d'authentification approuvé
+	LangueModele string        // DIGUEE_META_LANGUE_MODELE : code de langue du modèle (fr par défaut)
+	VersionAPI   string        // DIGUEE_META_VERSION_API : version de l'API Graph (v23.0 par défaut)
+	Delai        time.Duration // DIGUEE_META_DELAI : délai d'attente d'un envoi (10s par défaut)
 }
 
 var (
 	motifIDMeta = regexp.MustCompile(`^[0-9]{5,30}$`)
-	motifUUID   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	motifCleGCP = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
+	// Noms de modèles de Meta : minuscules, chiffres et « _ ».
+	motifModeleMeta  = regexp.MustCompile(`^[a-z0-9_]{1,512}$`)
+	motifLangueMeta  = regexp.MustCompile(`^[a-z]{2,3}(_[A-Z]{2})?$`)
+	motifVersionMeta = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,2}$`)
+	motifUUID        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	motifCleGCP      = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
 )
 
 // Charger lit la configuration avec la fonction getenv (os.Getenv en
@@ -194,6 +205,11 @@ func Charger(getenv func(string) string) (*Config, error) {
 			IDNumero:     l.motif("DIGUEE_META_ID_NUMERO", motifIDMeta, "l'identifiant numérique du numéro de téléphone (phone_number_id)"),
 			SecretApp:    l.secret("DIGUEE_META_SECRET_APP", 16),
 			JetonWebhook: l.secret("DIGUEE_META_JETON_WEBHOOK", 16),
+			JetonAcces:   l.secret("DIGUEE_META_JETON_ACCES", 32),
+			ModeleCode:   l.motif("DIGUEE_META_MODELE_CODE", motifModeleMeta, "le nom du modèle d'authentification (minuscules, chiffres, _)"),
+			LangueModele: l.motifDefaut("DIGUEE_META_LANGUE_MODELE", "fr", motifLangueMeta, "un code de langue de Meta comme fr ou en_US"),
+			VersionAPI:   l.motifDefaut("DIGUEE_META_VERSION_API", "v23.0", motifVersionMeta, "une version de l'API Graph comme v23.0"),
+			Delai:        l.duree("DIGUEE_META_DELAI", "10s"),
 		}
 	}
 
@@ -349,6 +365,15 @@ func (l *lecteur) secret(nom string, n int) string {
 func (l *lecteur) motif(nom string, m *regexp.Regexp, attendu string) string {
 	v := l.obligatoire(nom)
 	if v != "" && !m.MatchString(v) {
+		l.erreur(nom, fmt.Errorf("vaut %q ; attendu %s", v, attendu))
+	}
+	return v
+}
+
+// motifDefaut lit une valeur facultative, avec un défaut, qui doit respecter une forme.
+func (l *lecteur) motifDefaut(nom, defaut string, m *regexp.Regexp, attendu string) string {
+	v := l.chaine(nom, defaut)
+	if !m.MatchString(v) {
 		l.erreur(nom, fmt.Errorf("vaut %q ; attendu %s", v, attendu))
 	}
 	return v

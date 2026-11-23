@@ -18,6 +18,7 @@ import (
 
 	"github.com/2guntan/diguee/internal/altcha"
 	"github.com/2guntan/diguee/internal/antifraude"
+	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
@@ -37,7 +38,7 @@ var fichiersStatiques embed.FS
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
 	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal",
-	"sans_javascript", "verifier_sms"}
+	"sans_javascript", "verifier_sms", "verifier_code", "verifier_code_saisie"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -100,6 +101,11 @@ type Options struct {
 	// (construite d'après DIGUEE_IP_PAR_HEURE si nil).
 	Altcha       *altcha.Altcha
 	Ralentisseur *antifraude.Ralentisseur
+	// Codes : code envoyé par WhatsApp, en secours de la vérification
+	// inversée (spec §5.2), servi sous /verifier/code s'il est fourni. Il
+	// envoie par WhatsApp.Envoyeur et partage la limite par empreinte de
+	// la vérification inversée.
+	Codes *codes.Verificateur
 }
 
 // Serveur sert les pages publiques.
@@ -179,6 +185,12 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("POST /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("GET /verifier/etat", s.ouvert(s.etatJeton))
+	if opt.Codes != nil {
+		s.mux.HandleFunc("GET /verifier/code", s.ouvert(s.codePage))
+		s.mux.HandleFunc("POST /verifier/code", s.ouvert(s.demanderCode))
+		s.mux.HandleFunc("GET /verifier/code/saisie", s.ouvert(s.saisieCode))
+		s.mux.HandleFunc("POST /verifier/code/saisie", s.ouvert(s.saisieCode))
+	}
 	s.mux.HandleFunc("GET /verifier/sans-javascript", s.ouvert(s.page("sans_javascript")))
 	s.mux.HandleFunc("GET /verifier/sms", s.ouvert(s.page("verifier_sms")))
 	s.mux.HandleFunc("GET /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
@@ -233,17 +245,25 @@ type Donnees struct {
 	Simulation bool          // DIGUEE_WHATSAPP=fake : lien vers la page de simulation
 	StatutDev  int           // page de simulation : statut renvoyé par le webhook
 
+	// Code de secours.
+	CodeSecours bool          // le parcours du code par WhatsApp est servi
+	Essais      int           // essais restants pour le code en cours
+	DureeCode   time.Duration // validité d'un code
+	CodeDev     string        // page de simulation : dernier code écrit dans la console
+
 	Journal *VueJournal // page /journal
 }
 
 func (s *Serveur) donnees() Donnees {
 	return Donnees{
-		Config:     s.opt.Config,
-		Phase:      s.opt.Config.Phase(s.opt.Maintenant()),
-		Version:    s.opt.Version,
-		SHA256:     s.opt.SHA256,
-		Parcours:   s.parcoursActif(),
-		Simulation: s.opt.WhatsApp != nil && s.opt.WhatsApp.Fausse(),
+		Config:      s.opt.Config,
+		Phase:       s.opt.Config.Phase(s.opt.Maintenant()),
+		Version:     s.opt.Version,
+		SHA256:      s.opt.SHA256,
+		Parcours:    s.parcoursActif(),
+		Simulation:  s.opt.WhatsApp != nil && s.opt.WhatsApp.Fausse(),
+		CodeSecours: s.opt.Codes != nil,
+		DureeCode:   s.opt.Config.CodeDuree,
 	}
 }
 

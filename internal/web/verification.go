@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/2guntan/diguee/internal/altcha"
+	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/qr"
 	"github.com/2guntan/diguee/internal/whatsapp"
 )
@@ -95,6 +96,10 @@ func (s *Serveur) creerJeton(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.opt.Sessions.Ouvrir(w, r)
 	if err == nil {
+		// Un seul parcours à la fois : le code éventuel de la session est révoqué.
+		if s.opt.Codes != nil {
+			s.opt.Codes.Oublier(id)
+		}
 		_, err = s.opt.Verificateur.Creer(id)
 	}
 	if err != nil {
@@ -181,10 +186,13 @@ func (s *Serveur) lienWaMe(jeton string) string {
 	return "https://wa.me/" + numero + "?text=" + url.PathEscape(jeton)
 }
 
-// detruireSession détruit la session et oublie son jeton.
+// detruireSession détruit la session et oublie son jeton ou son code.
 func (s *Serveur) detruireSession(w http.ResponseWriter, r *http.Request) {
 	if id, ok := s.opt.Sessions.ID(r); ok {
 		s.opt.Verificateur.Oublier(id)
+		if s.opt.Codes != nil {
+			s.opt.Codes.Oublier(id)
+		}
 	}
 	s.opt.Sessions.Detruire(w, r)
 }
@@ -200,6 +208,10 @@ func (s *Serveur) devWhatsApp(w http.ResponseWriter, r *http.Request) {
 		if j, statut := s.opt.Verificateur.Etat(id); statut == whatsapp.Attente {
 			d.Jeton = j.Texte
 		}
+	}
+	// Mode « fake » seulement : le dernier code écrit dans la console.
+	if c, ok := s.opt.WhatsApp.Envoyeur.(*codes.Console); ok {
+		d.CodeDev = c.Dernier()
 	}
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, tailleMaxFormulaire)

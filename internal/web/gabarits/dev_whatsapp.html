@@ -7,6 +7,9 @@
     {{- if .StatutDev}}
     <p role="status">{{tf "dev.whatsapp.resultat" .StatutDev}} <a href="/verifier/whatsapp">{{t "dev.whatsapp.retour"}}</a></p>
     {{- end}}
+    {{- if .CodeDev}}
+    <p role="status">{{tf "dev.whatsapp.code" .CodeDev}} <a href="/verifier/code/saisie">{{t "dev.whatsapp.code.saisir"}}</a></p>
+    {{- end}}
     <form class="formulaire" method="post" action="/dev/whatsapp">
       <div class="champ">
         <label for="numero">{{t "dev.whatsapp.numero"}}</label>

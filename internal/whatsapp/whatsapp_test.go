@@ -216,6 +216,7 @@ func TestConstruire(t *testing.T) {
 	r = &integration.Registre{}
 	i, err = Construire(charger(map[string]string{
 		"DIGUEE_WHATSAPP": "meta", "DIGUEE_META_ID_NUMERO": "123456789012345",
+		"DIGUEE_META_JETON_ACCES": "jeton-d-acces-graph-de-test-0123456789", "DIGUEE_META_MODELE_CODE": "diguee_code",
 		"DIGUEE_META_SECRET_APP": "s3cr3t-de-l-application-meta", "DIGUEE_META_JETON_WEBHOOK": "jeton-de-verification",
 	}), r)
 	if err != nil || i.Fausse() || len(r.Fausses()) != 0 || r.Declarations()[0].Mode != "meta" {

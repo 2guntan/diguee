@@ -17,6 +17,9 @@
       <p class="aide" id="altcha-etat" aria-live="polite"></p>
     </form>
     <noscript><p class="alerte">{{t "verif.captcha.sans_js"}} <a href="/verifier/sans-javascript">{{t "verif.captcha.sans_js.lien"}}</a></p></noscript>
+    {{- if .CodeSecours}}
+    <p><a href="/verifier/code">{{t "code.lien"}}</a></p>
+    {{- end}}
     <p class="note">{{t "verif.captcha.explication"}}</p>
     <p class="note">{{t "verif.oubli"}}</p>
     <p class="note">{{t "verif.meta"}}</p>
