@@ -1,0 +1,48 @@
+{{define "titre"}}{{t "equipe.obs.reponse.titre"}}{{end}}
+{{define "contenu"}}
+    {{- $m := .Membre}}{{$csrf := .CSRF}}
+    {{- with .Obs}}{{$e := .Engagement}}{{$st := .Statut}}{{with .Reponse}}
+    <p><a href="/equipe/observatoire/statuts/{{$st.ID}}">{{tf "equipe.obs.retour_statut" $st.ID}}</a></p>
+    <h1 class="display">{{tf "equipe.obs.reponse_n" .ID}}</h1>
+    {{- template "obs_messages" $}}
+    <p class="lead">{{$e.Elu.Nom}} · {{$e.Elu.Fonction}} · {{tf "equipe.obs.reponse.au_statut" $st.ID (valeur $st.Valeur)}}</p>
+    <blockquote>{{$e.Citation}}</blockquote>
+    <h2>{{t "equipe.obs.reponse.texte"}}</h2>
+    <div class="reponse">{{.Texte}}</div>
+    <dl class="params">
+      <div><dt>{{t "equipe.obs.reponse.canal"}}</dt><dd>{{canal .Canal}}</dd></div>
+      <div><dt>{{t "equipe.obs.reponse.canal_detail"}}</dt><dd>{{.CanalDetail}}</dd></div>
+      <div><dt>{{t "equipe.obs.reponse.recu_le"}}</dt><dd>{{jour .RecuLe}}</dd></div>
+      <div><dt>{{t "equipe.obs.saisie"}}</dt><dd>{{tf "obs.fiche.par_le" .Saisi.ParNom (jour .Saisi.Le)}}</dd></div>
+      <div><dt>{{t "equipe.obs.etape"}}</dt><dd>{{etapeReponse .Etape}}</dd></div>
+      {{- with .Verification}}<div><dt>{{t "equipe.obs.reponse.verifie"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}}</dd></div>{{end}}
+      {{- with .Rejet}}<div><dt>{{t "obs.etape.rejete"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}}</dd></div>{{end}}
+      {{- with .Publication}}<div><dt>{{t "obs.etape.publie"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}} · {{tf "obs.fiche.entree" (nombre .JournalNumero)}}</dd></div>{{end}}
+    </dl>
+    {{- with .Rejet}}<p class="erreur">{{tf "equipe.obs.statut.motif_rejet" .Motif}}</p>{{end}}
+    {{- if and .Verification (not .Publication)}}
+    <p class="note">{{t "equipe.obs.reponse.attend_statut"}}</p>
+    {{- end}}
+
+    {{- if and (eq (print .Etape) "saisie") (a $m "relecteur")}}
+    <h2>{{t "equipe.obs.reponse.verifier"}}</h2>
+    {{- if eq .Saisi.Par $m.ID}}
+    <p class="note">{{t "equipe.obs.quatre_yeux"}}</p>
+    {{- else}}
+    <p>{{t "equipe.obs.reponse.verifier.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/reponses/{{.ID}}/verifier">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn" type="submit">{{t "equipe.obs.reponse.verifier.bouton"}}</button>
+    </form>
+    <form class="formulaire" method="post" action="/equipe/observatoire/reponses/{{.ID}}/rejeter">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="motif">{{t "equipe.obs.statut.motif"}}</label>
+        <textarea id="motif" name="motif" maxlength="2000" required></textarea>
+      </div>
+      <button class="btn secondaire" type="submit">{{t "equipe.obs.statut.rejeter.bouton"}}</button>
+    </form>
+    {{- end}}
+    {{- end}}
+    {{- end}}{{end}}
+{{end}}

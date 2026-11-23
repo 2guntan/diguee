@@ -14,3 +14,11 @@
 {{define "obs_source"}}
     <p><strong>{{.Titre}}</strong> · {{jour .Date}} · <a href="{{.URL}}" rel="nofollow noopener noreferrer">{{t "obs.source.origine"}}</a> · <a href="/equipe/observatoire/archives/{{.Archive}}.{{.Extension}}">{{tf "obs.source.archive" (t (print "obs.type." .Extension)) (taille .Taille)}}</a><br><span class="muted">{{tf "equipe.obs.source_n" .ID}} · {{t "obs.source.sha256"}}</span> <code class="empreinte">{{.Archive}}</code></p>
 {{end}}
+
+{{define "obs_ligne_reponse"}}
+    <p><a href="/equipe/observatoire/reponses/{{.ID}}">{{tf "equipe.obs.reponse_n" .ID}}</a> · {{etapeReponse .Etape}} · {{canal .Canal}} · {{tf "equipe.obs.reponse.recue" (jour .RecuLe)}} · {{tf "equipe.obs.saisi_par" .Saisi.ParNom (jour .Saisi.Le)}}</p>
+{{end}}
+
+{{define "obs_ligne_reponse_tableau"}}
+    <p><a href="/equipe/observatoire/reponses/{{.Reponse.ID}}">{{tf "equipe.obs.reponse_n" .Reponse.ID}}</a> · {{.Engagement.Elu.Nom}} · {{tf "equipe.obs.statut_n" .Reponse.StatutID}} · {{tf "equipe.obs.saisi_par" .Reponse.Saisi.ParNom (jour .Reponse.Saisi.Le)}}</p>
+{{end}}

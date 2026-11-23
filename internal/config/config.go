@@ -123,7 +123,10 @@ type Config struct {
 	PopulationANSD Texte // DIGUEE_POPULATION_ANSD
 
 	// Observatoire (§9).
-	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15
+	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15, et 15 au moins (ADR 0008)
+	// AdresseReponse est l'adresse où l'élu envoie son droit de réponse,
+	// écrite dans le dossier de préavis (ticket #14).
+	AdresseReponse Texte // DIGUEE_ADRESSE_REPONSE
 	// ArchiveTailleMax est la taille maximale, en octets, d'une copie
 	// archivée de source (PDF ou image) téléversée par un rédacteur.
 	ArchiveTailleMax int64 // DIGUEE_ARCHIVE_TAILLE_MO : 10 (Mo), 100 au plus
@@ -329,6 +332,10 @@ func Charger(getenv func(string) string) (*Config, error) {
 	c.PopulationANSD = l.texte("DIGUEE_POPULATION_ANSD")
 
 	c.PreavisJours = l.entier("DIGUEE_PREAVIS_JOURS", 15)
+	if c.PreavisJours < 15 {
+		l.erreur("DIGUEE_PREAVIS_JOURS", fmt.Errorf("vaut %d ; 15 jours au moins (ADR 0008)", c.PreavisJours))
+	}
+	c.AdresseReponse = l.texte("DIGUEE_ADRESSE_REPONSE")
 	c.ArchiveTailleMax = int64(l.auPlus("DIGUEE_ARCHIVE_TAILLE_MO", 10, "la limite du code", 100)) << 20
 
 	c.Stockage.Mode = l.choix("DIGUEE_STOCKAGE", "fake", "fake", "ovh")
@@ -374,7 +381,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 // Provisoires renvoie les noms des variables qui valent encore « À COMPLÉTER ».
 func (c *Config) Provisoires() []string {
 	var noms []string
-	for _, t := range []Texte{c.StructureNom, c.StructureAdresse, c.Contact, c.NumeroCDP, c.NumeroWhatsApp, c.PopulationANSD} {
+	for _, t := range []Texte{c.StructureNom, c.StructureAdresse, c.Contact, c.NumeroCDP, c.NumeroWhatsApp, c.PopulationANSD, c.AdresseReponse} {
 		if t.Provisoire() {
 			noms = append(noms, t.Variable)
 		}

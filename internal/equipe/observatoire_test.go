@@ -150,7 +150,7 @@ func TestObservatoireDeBoutEnBout(t *testing.T) {
 	publier("non_tenu", "Erreur de test.", 3)
 	attendre(t, "page du non tenu validé", ca.get("/equipe/observatoire/statuts/3"), http.StatusOK, "préavis")
 	attendre(t, "publication d'un non tenu", cm.post("/equipe/observatoire/statuts/3/publier", url.Values{"csrf": {jetonM}}),
-		http.StatusBadRequest, "ne peut pas encore être publié")
+		http.StatusBadRequest, "demande d'abord un préavis")
 	attendre(t, "tableau de bord", ca.get("/equipe/observatoire"), http.StatusOK, "Statuts validés, à publier", "Statut nº 3")
 
 	// Journal public : une entrée par publication, rien pour le non tenu.

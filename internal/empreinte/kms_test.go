@@ -180,6 +180,7 @@ func TestModesReelsAdmisEnProduction(t *testing.T) {
 		"DIGUEE_CONTACT": "c", "DIGUEE_NUMERO_CDP": "n", "DIGUEE_NUMERO_WHATSAPP": "+221700000000",
 		"DIGUEE_OUVERTURE": "2027-01-15", "DIGUEE_CLE_TOTP": strings.Repeat("ab", 32),
 		"DIGUEE_POPULATION_ANSD": "/etc/diguee/population-ansd.json",
+		"DIGUEE_ADRESSE_REPONSE": "droit-de-reponse@diguee.example",
 	}
 	for nom, env := range map[string]map[string]string{
 		"ovh": fauxkms.DemarrerOVH(t).Env(), "gcp": fauxkms.DemarrerGCP(t).Env(),

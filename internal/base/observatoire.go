@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/stockage"
 )
@@ -42,8 +43,10 @@ func erreurObs(err error) error {
 	switch {
 	case strings.HasSuffix(pe.ConstraintName, "quatre_yeux"):
 		return observatoire.ErrQuatreYeux
-	case pe.ConstraintName == "statut_publiable_sans_preavis":
+	case pe.ConstraintName == "statut_preavis_echu", pe.ConstraintName == "statut_preavis_quinze_jours":
 		return observatoire.ErrPreavis
+	case pe.ConstraintName == "droit_reponse_en_attente":
+		return observatoire.ErrReponseAttente
 	case pe.Code == "23505", pe.Code == "23503", pe.Code == "23514":
 		return fmt.Errorf("%w : %s", observatoire.ErrEtape, pe.Message)
 	}
@@ -304,39 +307,155 @@ func (b *Base) Rejeter(ctx context.Context, statut int64, a observatoire.Acte, m
 }
 
 // Publier implémente observatoire.Magasin : sous le verrou, l'engagement est
-// relu, l'entrée du journal public inscrite, puis la publication, dans la
-// même transaction (tout ou rien).
-func (b *Base) Publier(ctx context.Context, statut int64, a observatoire.Acte, j observatoire.Journaliser) (int64, error) {
+// relu, l'entrée du journal public inscrite, puis la publication ; enfin
+// chaque droit de réponse vérifié au statut est publié avec son entrée, dans
+// la même transaction (tout ou rien).
+func (b *Base) Publier(ctx context.Context, statut int64, a observatoire.Acte, j observatoire.Journaliser, jr observatoire.JournaliserReponse) (int64, error) {
 	var numero int64
 	err := b.ecrireObs(ctx, func(tx pgx.Tx) error {
-		eid, err := engagementDuStatut(ctx, tx, statut)
+		e, st, err := statutEnTransaction(ctx, tx, statut)
 		if err != nil {
 			return err
-		}
-		e, err := lireEngagement(ctx, tx, eid, false)
-		if err != nil {
-			return err
-		}
-		var st *observatoire.Statut
-		for i := range e.Statuts {
-			if e.Statuts[i].ID == statut {
-				st = &e.Statuts[i]
-			}
-		}
-		if st == nil {
-			return observatoire.ErrIntrouvable
 		}
 		if numero, err = j(ctx, journalTx{tx}, e, st); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO statut_publication (statut_id, valeur, publie_par, publie_le, journal_numero)
-			VALUES ($1, $2, $3::uuid, $4, $5)`, statut, string(st.Valeur), a.Par, jourObs(a.Le), numero)
-		return err
+		if _, err = tx.Exec(ctx, `INSERT INTO statut_publication (statut_id, valeur, publie_par, publie_le, journal_numero)
+			VALUES ($1, $2, $3::uuid, $4, $5)`, statut, string(st.Valeur), a.Par, jourObs(a.Le), numero); err != nil {
+			return err
+		}
+		if e, st, err = statutEnTransaction(ctx, tx, statut); err != nil {
+			return err
+		}
+		for i := range e.Reponses {
+			if r := &e.Reponses[i]; r.StatutID == statut && r.Etape() == observatoire.ReponseVerifiee {
+				if err := publierReponse(ctx, tx, e, st, r, a, jr); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
 	return numero, nil
+}
+
+// statutEnTransaction relit, dans la transaction, un statut et son
+// engagement complet.
+func statutEnTransaction(ctx context.Context, tx pgx.Tx, statut int64) (*observatoire.Engagement, *observatoire.Statut, error) {
+	eid, err := engagementDuStatut(ctx, tx, statut)
+	if err != nil {
+		return nil, nil, err
+	}
+	e, err := lireEngagement(ctx, tx, eid, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range e.Statuts {
+		if e.Statuts[i].ID == statut {
+			return e, &e.Statuts[i], nil
+		}
+	}
+	return nil, nil, observatoire.ErrIntrouvable
+}
+
+// publierReponse inscrit l'entrée du journal d'un droit de réponse vérifié,
+// puis sa publication.
+func publierReponse(ctx context.Context, tx pgx.Tx, e *observatoire.Engagement, st *observatoire.Statut, r *observatoire.DroitReponse,
+	a observatoire.Acte, jr observatoire.JournaliserReponse) error {
+	n, err := jr(ctx, journalTx{tx}, e, st, r)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO droit_reponse_publication (droit_reponse_id, publie_par, publie_le, journal_numero)
+		VALUES ($1, $2::uuid, $3, $4)`, r.ID, a.Par, jourObs(a.Le), n)
+	return err
+}
+
+// EnregistrerPreavis implémente observatoire.Magasin. La valeur est
+// recopiée du statut : la base n'accepte qu'un « non tenu » ou un « partiel ».
+func (b *Base) EnregistrerPreavis(ctx context.Context, statut int64, p observatoire.PreavisEnvoye) error {
+	return b.ecrireObs(ctx, func(tx pgx.Tx) error {
+		return executerUne(ctx, tx, observatoire.ErrIntrouvable, `INSERT INTO statut_preavis (statut_id, valeur, envoye_le, echeance, moyen,
+			dossier_sha256, enregistre_par, enregistre_le)
+			SELECT id, valeur, $2, $3, $4, $5, $6::uuid, $7 FROM statut WHERE id = $1`,
+			statut, jourObs(p.EnvoyeLe), jourObs(p.Echeance), p.Moyen, p.Dossier[:], p.Par, jourObs(p.Le))
+	})
+}
+
+// SaisirReponse implémente observatoire.Magasin.
+func (b *Base) SaisirReponse(ctx context.Context, r observatoire.DroitReponse) (int64, error) {
+	var id int64
+	err := b.ecrireObs(ctx, func(tx pgx.Tx) error {
+		ok, err := existe(ctx, tx, "SELECT 1 FROM statut_preavis WHERE statut_id = $1", r.StatutID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return observatoire.ErrSansPreavis
+		}
+		return tx.QueryRow(ctx, `INSERT INTO droit_reponse (id, statut_id, texte, canal, canal_detail, recu_le, saisi_par, saisi_le)
+			SELECT coalesce(max(id), 0) + 1, $1, $2, $3, $4, $5, $6::uuid, $7 FROM droit_reponse RETURNING id`,
+			r.StatutID, r.Texte, string(r.Canal), r.CanalDetail, jourObs(r.RecuLe), r.Saisi.Par, jourObs(r.Saisi.Le)).Scan(&id)
+	})
+	return id, err
+}
+
+// EngagementDeLaReponse implémente observatoire.Magasin.
+func (b *Base) EngagementDeLaReponse(ctx context.Context, reponse int64) (int64, error) {
+	var id int64
+	err := b.Pool.QueryRow(ctx, `SELECT st.engagement_id FROM droit_reponse d JOIN statut st ON st.id = d.statut_id
+		WHERE d.id = $1`, reponse).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, observatoire.ErrIntrouvable
+	}
+	return id, err
+}
+
+// VerifierReponse implémente observatoire.Magasin. Le membre qui l'a saisi
+// est recopié : la contrainte droit_reponse_quatre_yeux compare.
+func (b *Base) VerifierReponse(ctx context.Context, reponse int64, a observatoire.Acte, jr observatoire.JournaliserReponse) (int64, error) {
+	var numero int64
+	err := b.ecrireObs(ctx, func(tx pgx.Tx) error {
+		var statut int64
+		if err := tx.QueryRow(ctx, `INSERT INTO droit_reponse_verification (droit_reponse_id, saisi_par, verifie_par, verifie_le)
+			SELECT id, saisi_par, $2::uuid, $3 FROM droit_reponse WHERE id = $1
+			RETURNING (SELECT statut_id FROM droit_reponse WHERE id = $1)`, reponse, a.Par, jourObs(a.Le)).Scan(&statut); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return observatoire.ErrIntrouvable
+			}
+			return err
+		}
+		e, st, err := statutEnTransaction(ctx, tx, statut)
+		if err != nil || st.Publication == nil {
+			return err // statut pas encore publié : la réponse le sera avec lui
+		}
+		for i := range e.Reponses {
+			if r := &e.Reponses[i]; r.ID == reponse {
+				return publierReponse(ctx, tx, e, st, r, a, func(ctx context.Context, m journal.Magasin, e *observatoire.Engagement,
+					s *observatoire.Statut, r *observatoire.DroitReponse) (int64, error) {
+					n, err := jr(ctx, m, e, s, r)
+					numero = n
+					return n, err
+				})
+			}
+		}
+		return observatoire.ErrIntrouvable
+	})
+	if err != nil {
+		return 0, err
+	}
+	return numero, nil
+}
+
+// RejeterReponse implémente observatoire.Magasin.
+func (b *Base) RejeterReponse(ctx context.Context, reponse int64, a observatoire.Acte, motif string) error {
+	return b.ecrireObs(ctx, func(tx pgx.Tx) error {
+		return executerUne(ctx, tx, observatoire.ErrIntrouvable, `INSERT INTO droit_reponse_rejet (droit_reponse_id, saisi_par, rejete_par, rejete_le, motif)
+			SELECT id, saisi_par, $2::uuid, $3, $4 FROM droit_reponse WHERE id = $1`, reponse, a.Par, jourObs(a.Le), motif)
+	})
 }
 
 func engagementDuStatut(ctx context.Context, q requeteObs, statut int64) (int64, error) {
@@ -446,7 +565,8 @@ func lireEngagement(ctx context.Context, q requeteObs, id int64, public bool) (*
 		p.propose_le,
 		v.valide_par::text, mv.nom, v.valide_le,
 		r.rejete_par::text, mj.nom, r.rejete_le, r.motif,
-		pu.publie_par::text, mp.nom, pu.publie_le, pu.journal_numero
+		pu.publie_par::text, mp.nom, pu.publie_le, pu.journal_numero,
+		pv.enregistre_par::text, mpv.nom, pv.enregistre_le, pv.envoye_le, pv.echeance, pv.moyen, pv.dossier_sha256
 		FROM statut st
 		JOIN membre mr ON mr.id = st.redige_par
 		LEFT JOIN statut_proposition p ON p.statut_id = st.id
@@ -456,6 +576,8 @@ func lireEngagement(ctx context.Context, q requeteObs, id int64, public bool) (*
 		LEFT JOIN membre mj ON mj.id = r.rejete_par
 		LEFT JOIN statut_publication pu ON pu.statut_id = st.id
 		LEFT JOIN membre mp ON mp.id = pu.publie_par
+		LEFT JOIN statut_preavis pv ON pv.statut_id = st.id
+		LEFT JOIN membre mpv ON mpv.id = pv.enregistre_par
 		WHERE st.engagement_id = $1`+filtre+` ORDER BY `+ordre, id)
 	if err != nil {
 		return nil, err
@@ -469,9 +591,13 @@ func lireEngagement(ctx context.Context, q requeteObs, id int64, public bool) (*
 			vpar, vnom, rpar, rnom pgtype.Text
 			motif, upar, unom      pgtype.Text
 			numero                 pgtype.Int8
+			ppar, pnom, pmoyen     pgtype.Text
+			pl2, penv, pech        pgtype.Date
+			pdossier               []byte
 		)
 		if err := lignes.Scan(&st.ID, &valeur, &st.Explication, &st.Redige.Par, &st.Redige.ParNom, &redige, &pl,
-			&vpar, &vnom, &vl, &rpar, &rnom, &rl, &motif, &upar, &unom, &ul, &numero); err != nil {
+			&vpar, &vnom, &vl, &rpar, &rnom, &rl, &motif, &upar, &unom, &ul, &numero,
+			&ppar, &pnom, &pl2, &penv, &pech, &pmoyen, &pdossier); err != nil {
 			lignes.Close()
 			return nil, err
 		}
@@ -489,6 +615,15 @@ func lireEngagement(ctx context.Context, q requeteObs, id int64, public bool) (*
 			st.Publication = &observatoire.Publication{Acte: observatoire.Acte{Par: upar.String, ParNom: unom.String, Le: depuisDate(ul)},
 				JournalNumero: numero.Int64}
 		}
+		if ppar.Valid {
+			p := &observatoire.PreavisEnvoye{Acte: observatoire.Acte{Par: ppar.String, ParNom: pnom.String, Le: depuisDate(pl2)},
+				EnvoyeLe: depuisDate(penv), Echeance: depuisDate(pech), Moyen: pmoyen.String}
+			copy(p.Dossier[:], pdossier)
+			if public {
+				p.Moyen, p.Par, p.ParNom = "", "", ""
+			}
+			st.PreavisEnvoye = p
+		}
 		indice[st.ID] = len(e.Statuts)
 		e.Statuts = append(e.Statuts, st)
 	}
@@ -504,18 +639,85 @@ func lireEngagement(ctx context.Context, q requeteObs, id int64, public bool) (*
 	if err != nil {
 		return nil, err
 	}
-	defer lignes.Close()
 	for lignes.Next() {
 		var sid int64
 		s, err := lireSource(lignes, &sid)
 		if err != nil {
+			lignes.Close()
 			return nil, err
 		}
 		if i, ok := indice[sid]; ok {
 			e.Statuts[i].Preuves = append(e.Statuts[i].Preuves, s)
 		}
 	}
-	return &e, lignes.Err()
+	lignes.Close()
+	if err := lignes.Err(); err != nil {
+		return nil, err
+	}
+	if e.Reponses, err = lireReponses(ctx, q, id, public); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// lireReponses lit les droits de réponse aux statuts d'un engagement.
+// public : seulement les publiés, dans l'ordre de publication, sans la
+// référence du canal.
+func lireReponses(ctx context.Context, q requeteObs, engagement int64, public bool) ([]observatoire.DroitReponse, error) {
+	filtre, ordre := "", "d.id"
+	if public {
+		filtre, ordre = " AND pu.droit_reponse_id IS NOT NULL", "pu.journal_numero"
+	}
+	lignes, err := q.Query(ctx, `SELECT d.id, d.statut_id, d.texte, d.canal, d.canal_detail, d.recu_le,
+		d.saisi_par::text, ms.nom, d.saisi_le,
+		v.verifie_par::text, mv.nom, v.verifie_le,
+		r.rejete_par::text, mr.nom, r.rejete_le, r.motif,
+		pu.publie_par::text, mp.nom, pu.publie_le, pu.journal_numero
+		FROM droit_reponse d
+		JOIN statut st ON st.id = d.statut_id
+		JOIN membre ms ON ms.id = d.saisi_par
+		LEFT JOIN droit_reponse_verification v ON v.droit_reponse_id = d.id
+		LEFT JOIN membre mv ON mv.id = v.verifie_par
+		LEFT JOIN droit_reponse_rejet r ON r.droit_reponse_id = d.id
+		LEFT JOIN membre mr ON mr.id = r.rejete_par
+		LEFT JOIN droit_reponse_publication pu ON pu.droit_reponse_id = d.id
+		LEFT JOIN membre mp ON mp.id = pu.publie_par
+		WHERE st.engagement_id = $1`+filtre+` ORDER BY `+ordre, engagement)
+	if err != nil {
+		return nil, err
+	}
+	defer lignes.Close()
+	var rs []observatoire.DroitReponse
+	for lignes.Next() {
+		var (
+			r                       observatoire.DroitReponse
+			canal                   string
+			recu, saisi, vl, rl, ul pgtype.Date
+			vpar, vnom, rpar, rnom  pgtype.Text
+			motif, upar, unom       pgtype.Text
+			numero                  pgtype.Int8
+		)
+		if err := lignes.Scan(&r.ID, &r.StatutID, &r.Texte, &canal, &r.CanalDetail, &recu, &r.Saisi.Par, &r.Saisi.ParNom, &saisi,
+			&vpar, &vnom, &vl, &rpar, &rnom, &rl, &motif, &upar, &unom, &ul, &numero); err != nil {
+			return nil, err
+		}
+		r.Canal, r.RecuLe, r.Saisi.Le = observatoire.Canal(canal), depuisDate(recu), depuisDate(saisi)
+		if vpar.Valid {
+			r.Verification = &observatoire.Acte{Par: vpar.String, ParNom: vnom.String, Le: depuisDate(vl)}
+		}
+		if rpar.Valid {
+			r.Rejet = &observatoire.Rejet{Acte: observatoire.Acte{Par: rpar.String, ParNom: rnom.String, Le: depuisDate(rl)}, Motif: motif.String}
+		}
+		if upar.Valid {
+			r.Publication = &observatoire.Publication{Acte: observatoire.Acte{Par: upar.String, ParNom: unom.String, Le: depuisDate(ul)},
+				JournalNumero: numero.Int64}
+		}
+		if public {
+			r.CanalDetail = ""
+		}
+		rs = append(rs, r)
+	}
+	return rs, lignes.Err()
 }
 
 // publicsSQL : les engagements publics (validés, avec au moins un statut

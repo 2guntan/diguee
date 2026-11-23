@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/base/basetest"
-	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/stockage"
 )
@@ -33,6 +33,15 @@ const (
 // « tenu » proposé par awa ; renvoie l'identifiant du statut.
 func obsDeTest(t *testing.T, valeur observatoire.Valeur) (*base.Base, *observatoire.Service, int64) {
 	t.Helper()
+	b, svc, st, _ := obsDeTestHorloge(t, valeur)
+	return b, svc, st
+}
+
+// obsDeTestHorloge : comme obsDeTest, avec l'horloge du service, réglable
+// (le 2 décembre 2026 au départ).
+func obsDeTestHorloge(t *testing.T, valeur observatoire.Valeur) (*base.Base, *observatoire.Service, int64, *horlogeObs) {
+	t.Helper()
+	h := &horlogeObs{t: time.Date(2026, 12, 2, 9, 30, 0, 0, time.UTC)}
 	b := basetest.Ouvrir(t)
 	membreSQL(t, b, awa, "awa")
 	membreSQL(t, b, moussa, "moussa")
@@ -41,7 +50,7 @@ func obsDeTest(t *testing.T, valeur observatoire.Valeur) (*base.Base, *observato
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := observatoire.NouveauService(b, d, 1<<20, func() time.Time { return time.Date(2026, 12, 2, 9, 30, 0, 0, time.UTC) })
+	svc := observatoire.NouveauService(b, d, 1<<20, h.Maintenant)
 	jour := func(s string) time.Time { j, _ := time.Parse(time.DateOnly, s); return j }
 	elu, err := svc.SaisirElu(ctx, awa, observatoire.SaisieElu{Nom: "Élu de test", Fonction: "Maire",
 		Mandat: observatoire.Mandat{Debut: jour("2022-01-01"), Fin: jour("2027-01-01")}})
@@ -68,7 +77,30 @@ func obsDeTest(t *testing.T, valeur observatoire.Valeur) (*base.Base, *observato
 	if err := svc.Proposer(ctx, awa, st); err != nil {
 		t.Fatal(err)
 	}
-	return b, svc, st
+	return b, svc, st, h
+}
+
+// horlogeObs est une horloge injectable pour les tests du préavis.
+type horlogeObs struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (h *horlogeObs) Maintenant() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.t
+}
+
+// Jour règle l'horloge sur un jour (AAAA-MM-JJ), à 9 h 30.
+func (h *horlogeObs) Jour(s string) {
+	j, err := time.Parse(time.DateOnly, s)
+	if err != nil {
+		panic(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.t = j.Add(9*time.Hour + 30*time.Minute)
 }
 
 func codeSQL(err error) string {
@@ -159,46 +191,6 @@ func TestStatutsEnAjoutSeul(t *testing.T) {
 	var n int
 	if err := b.Pool.QueryRow(ctx, "SELECT count(*) FROM statut WHERE valeur = 'tenu'").Scan(&n); err != nil || n != 1 {
 		t.Errorf("statut modifié : %d, %v", n, err)
-	}
-}
-
-// « Non tenu » et « partiel » ne sont pas publiables sans préavis (ticket
-// #14), ni par l'API ni en SQL direct ; ils peuvent être validés.
-func TestNonTenuEtPartielNonPubliables(t *testing.T) {
-	ctx := context.Background()
-	for _, v := range []observatoire.Valeur{observatoire.NonTenu, observatoire.Partiel} {
-		b, svc, st := obsDeTest(t, v)
-		if err := svc.Valider(ctx, moussa, st); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := svc.Publier(ctx, moussa, st); !errors.Is(err, observatoire.ErrPreavis) {
-			t.Errorf("%s par l'API : %v", v, err)
-		}
-		// Le magasin seul, avec une entrée du journal inscrite pour l'occasion :
-		// la contrainte refuse, et la transaction (journal compris) est annulée.
-		_, err := b.Publier(ctx, st, observatoire.Acte{Par: moussa, Le: time.Now()},
-			func(ctx context.Context, jm journal.Magasin, _ *observatoire.Engagement, _ *observatoire.Statut) (int64, error) {
-				e, err := journal.Nouveau(jm, nil).Inscrire(ctx, journal.StatutPublie, map[string]any{"essai": 1})
-				return e.Numero, err
-			})
-		if !errors.Is(err, observatoire.ErrPreavis) {
-			t.Errorf("%s par le magasin : %v", v, err)
-		}
-		if n, _ := b.CompterJournal(ctx); n != 0 {
-			t.Errorf("%s : %d entrée(s) au journal après un refus", v, n)
-		}
-		if _, err := journal.Nouveau(b, nil).Inscrire(ctx, journal.StatutPublie, map[string]any{"essai": 1}); err != nil {
-			t.Fatal(err)
-		}
-		_, err = b.Pool.Exec(ctx, `INSERT INTO statut_publication VALUES ($1, $2, $3, '2026-12-02', 1)`, st, string(v), moussa)
-		if c := codeSQL(err); c != "23514 statut_publiable_sans_preavis" {
-			t.Errorf("%s en SQL direct : %v (%s)", v, err, c)
-		}
-		// En mentant sur la valeur : la clé étrangère composée.
-		_, err = b.Pool.Exec(ctx, `INSERT INTO statut_publication VALUES ($1, 'tenu', $2, '2026-12-02', 1)`, st, moussa)
-		if c := codeSQL(err); !strings.HasPrefix(c, "23503") {
-			t.Errorf("%s, valeur falsifiée : %v (%s)", v, err, c)
-		}
 	}
 }
 

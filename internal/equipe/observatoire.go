@@ -28,9 +28,23 @@ type VueObs struct {
 	AValider   []observatoire.Engagement // engagements saisis, pas encore validés
 	Brouillons []LigneStatut             // brouillons du membre connecté
 	Proposes   []LigneStatut             // statuts proposés, à valider ou rejeter
-	Valides    []LigneStatut             // statuts validés, à publier
+	Valides    []LigneStatut             // statuts validés, à publier (préavis échu s'il le faut)
+	// Préavis (ticket #14).
+	APreavis          []LigneStatut  // non tenu ou partiel validés : dossier à envoyer
+	PreavisEnCours    []LigneStatut  // préavis envoyé, échéance pas encore atteinte
+	ReponsesAVerifier []LigneReponse // droits de réponse saisis, à vérifier
+	Aujourdhui        time.Time
+	JoursPreavis      int
+	Canaux            []observatoire.Canal
+	Reponse           *observatoire.DroitReponse
 	// Saisie à conserver après une erreur.
 	Saisie map[string]string
+}
+
+// LigneReponse est un droit de réponse avec son engagement.
+type LigneReponse struct {
+	Engagement observatoire.Engagement
+	Reponse    observatoire.DroitReponse
 }
 
 // LigneStatut est un statut avec son engagement, pour le tableau de bord.
@@ -62,10 +76,20 @@ func (e *Espace) monterObservatoire() {
 	e.Gerer("POST /equipe/observatoire/statuts/{id}/valider", e.obsValider, Relecteur)
 	e.Gerer("POST /equipe/observatoire/statuts/{id}/rejeter", e.obsRejeter, Relecteur)
 	e.Gerer("POST /equipe/observatoire/statuts/{id}/publier", e.obsPublier, Redacteur, Relecteur)
+	// Préavis et droit de réponse (ticket #14). La plateforme prépare le
+	// dossier ; un membre l'envoie lui-même, puis enregistre la date d'envoi.
+	e.Gerer("GET /equipe/observatoire/statuts/{id}/dossier.pdf", e.obsDossier, lecteursObs...)
+	e.Gerer("POST /equipe/observatoire/statuts/{id}/preavis", e.obsPreavis, Redacteur, Relecteur)
+	e.Gerer("POST /equipe/observatoire/statuts/{id}/reponses", e.obsSaisirReponse, Redacteur)
+	e.Gerer("GET /equipe/observatoire/reponses/{id}", e.obsReponse, lecteursObs...)
+	e.Gerer("POST /equipe/observatoire/reponses/{id}/verifier", e.obsVerifierReponse, Relecteur)
+	e.Gerer("POST /equipe/observatoire/reponses/{id}/rejeter", e.obsRejeterReponse, Relecteur)
 }
 
 func (e *Espace) vueObs() *VueObs {
-	return &VueObs{Valeurs: observatoire.Valeurs, TailleMax: e.opt.Observatoire.TailleMax(), Saisie: map[string]string{}}
+	o := e.opt.Observatoire
+	return &VueObs{Valeurs: observatoire.Valeurs, TailleMax: o.TailleMax(), Aujourdhui: o.Aujourdhui(),
+		JoursPreavis: o.JoursPreavis(), Canaux: observatoire.Canaux, Saisie: map[string]string{}}
 }
 
 // echecObs affiche l'erreur de saisie (clé du catalogue) sur la page
@@ -147,7 +171,22 @@ func (e *Espace) obsTableau(w http.ResponseWriter, r *http.Request) {
 			case observatoire.Propose:
 				v.Proposes = append(v.Proposes, l)
 			case observatoire.Valide:
-				v.Valides = append(v.Valides, l)
+				if st.Valeur.DemandePreavis() {
+					v.APreavis = append(v.APreavis, l)
+				} else {
+					v.Valides = append(v.Valides, l)
+				}
+			case observatoire.Preavis:
+				if v.Aujourdhui.Before(st.PreavisEnvoye.Echeance) {
+					v.PreavisEnCours = append(v.PreavisEnCours, l)
+				} else {
+					v.Valides = append(v.Valides, l)
+				}
+			}
+		}
+		for _, rep := range eng.Reponses {
+			if rep.Etape() == observatoire.ReponseSaisie {
+				v.ReponsesAVerifier = append(v.ReponsesAVerifier, LigneReponse{Engagement: eng, Reponse: rep})
 			}
 		}
 	}
@@ -321,6 +360,9 @@ var messagesObs = map[string]string{
 	"engagement": "equipe.obs.message.engagement", "source": "equipe.obs.message.source_liee",
 	"valide": "equipe.obs.message.valide", "statut": "equipe.obs.message.statut", "preuve": "equipe.obs.message.preuve",
 	"propose": "equipe.obs.message.propose", "rejete": "equipe.obs.message.rejete",
+	"preavis": "equipe.obs.message.preavis", "reponse": "equipe.obs.message.reponse",
+	"reponse_verifiee": "equipe.obs.message.reponse_verifiee", "reponse_publiee": "equipe.obs.message.reponse_publiee",
+	"reponse_rejetee": "equipe.obs.message.reponse_rejetee",
 }
 
 func (e *Espace) obsEngagement(w http.ResponseWriter, r *http.Request) {
@@ -453,4 +495,110 @@ func (e *Espace) obsPublier(w http.ResponseWriter, r *http.Request) {
 	}
 	e.opt.Journal.Info("observatoire : statut publié et inscrit au journal public", "entree", numero)
 	http.Redirect(w, r, "/equipe/observatoire?fait=publie", http.StatusSeeOther)
+}
+
+// obsDossier sert le dossier de préavis de l'élu, en PDF, à télécharger et
+// à envoyer soi-même par le canal officiel de l'élu : la plateforme
+// n'envoie rien.
+func (e *Espace) obsDossier(w http.ResponseWriter, r *http.Request) {
+	id := idDuChemin(r)
+	b, err := e.opt.Observatoire.Dossier(r.Context(), id)
+	if err != nil {
+		e.echecObs(w, r, "dossier de préavis", err, e.pageStatut)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/pdf")
+	h.Set("Content-Disposition", `attachment; filename="diguee-preavis-statut-`+strconv.FormatInt(id, 10)+`.pdf"`)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	h.Set("Content-Length", strconv.Itoa(len(b)))
+	_, _ = w.Write(b)
+}
+
+func (e *Espace) obsPreavis(w http.ResponseWriter, r *http.Request) {
+	m, _ := MembreDe(r.Context())
+	id := idDuChemin(r)
+	err := e.opt.Observatoire.EnregistrerPreavis(r.Context(), m.ID, id, dateDuFormulaire(r, "envoye_le"), r.PostFormValue("moyen"))
+	if err != nil {
+		e.echecObs(w, r, "enregistrement d'un préavis", err, func(w http.ResponseWriter, r *http.Request, s int, d Donnees) {
+			d.Obs = e.vueObs()
+			saisie(r, &d, "envoye_le", "moyen")
+			e.pageStatut(w, r, s, d)
+		})
+		return
+	}
+	e.opt.Journal.Info("observatoire : préavis enregistré")
+	http.Redirect(w, r, "/equipe/observatoire/statuts/"+strconv.FormatInt(id, 10)+"?fait=preavis", http.StatusSeeOther)
+}
+
+func (e *Espace) obsSaisirReponse(w http.ResponseWriter, r *http.Request) {
+	m, _ := MembreDe(r.Context())
+	rid, err := e.opt.Observatoire.SaisirReponse(r.Context(), m.ID, idDuChemin(r), observatoire.SaisieReponse{
+		Texte: r.PostFormValue("texte"), Canal: observatoire.Canal(r.PostFormValue("canal")),
+		CanalDetail: r.PostFormValue("canal_detail"), RecuLe: dateDuFormulaire(r, "recu_le"),
+	})
+	if err != nil {
+		e.echecObs(w, r, "saisie d'un droit de réponse", err, func(w http.ResponseWriter, r *http.Request, s int, d Donnees) {
+			d.Obs = e.vueObs()
+			saisie(r, &d, "texte", "canal", "canal_detail", "recu_le")
+			e.pageStatut(w, r, s, d)
+		})
+		return
+	}
+	e.opt.Journal.Info("observatoire : droit de réponse saisi")
+	http.Redirect(w, r, "/equipe/observatoire/reponses/"+strconv.FormatInt(rid, 10)+"?fait=reponse", http.StatusSeeOther)
+}
+
+func (e *Espace) pageReponse(w http.ResponseWriter, r *http.Request, statut int, d Donnees) {
+	eng, st, rep, err := e.opt.Observatoire.Reponse(r.Context(), idDuChemin(r))
+	if errors.Is(err, observatoire.ErrIntrouvable) {
+		e.rendre(w, http.StatusNotFound, "introuvable", donnees(r))
+		return
+	}
+	if err != nil {
+		e.erreurInterne(w, "observatoire : droit de réponse", err)
+		return
+	}
+	if d.Obs == nil {
+		d.Obs = e.vueObs()
+	}
+	d.Obs.Engagement, d.Obs.Statut, d.Obs.Reponse = eng, st, rep
+	e.rendre(w, statut, "obs_reponse", d)
+}
+
+func (e *Espace) obsReponse(w http.ResponseWriter, r *http.Request) {
+	d := donnees(r)
+	d.Obs = e.vueObs()
+	d.Message = messagesObs[r.URL.Query().Get("fait")]
+	e.pageReponse(w, r, http.StatusOK, d)
+}
+
+func (e *Espace) obsVerifierReponse(w http.ResponseWriter, r *http.Request) {
+	m, _ := MembreDe(r.Context())
+	id := idDuChemin(r)
+	numero, err := e.opt.Observatoire.VerifierReponse(r.Context(), m.ID, id)
+	if err != nil {
+		e.echecObs(w, r, "vérification d'un droit de réponse", err, e.pageReponse)
+		return
+	}
+	fait := "reponse_verifiee"
+	if numero > 0 {
+		fait = "reponse_publiee"
+		e.opt.Journal.Info("observatoire : droit de réponse publié et inscrit au journal public", "entree", numero)
+	} else {
+		e.opt.Journal.Info("observatoire : droit de réponse vérifié")
+	}
+	http.Redirect(w, r, "/equipe/observatoire/reponses/"+strconv.FormatInt(id, 10)+"?fait="+fait, http.StatusSeeOther)
+}
+
+func (e *Espace) obsRejeterReponse(w http.ResponseWriter, r *http.Request) {
+	m, _ := MembreDe(r.Context())
+	id := idDuChemin(r)
+	if err := e.opt.Observatoire.RejeterReponse(r.Context(), m.ID, id, r.PostFormValue("motif")); err != nil {
+		e.echecObs(w, r, "rejet d'un droit de réponse", err, e.pageReponse)
+		return
+	}
+	e.opt.Journal.Info("observatoire : droit de réponse rejeté")
+	http.Redirect(w, r, "/equipe/observatoire/reponses/"+strconv.FormatInt(id, 10)+"?fait=reponse_rejetee", http.StatusSeeOther)
 }

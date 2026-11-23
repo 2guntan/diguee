@@ -71,16 +71,89 @@
     {{- end}}
     {{- end}}
 
-    {{- if eq (print .Etape) "valide"}}
+    {{- if and (eq (print .Etape) "valide") .Valeur.DemandePreavis}}
+    <h2>{{t "equipe.obs.preavis"}}</h2>
+    <p>{{tf "equipe.obs.preavis.aide" $obs.JoursPreavis}}</p>
+    <p><a class="btn secondaire" href="/equipe/observatoire/statuts/{{.ID}}/dossier.pdf">{{t "equipe.obs.preavis.dossier"}}</a></p>
+    <p class="note">{{t "equipe.obs.preavis.canal"}} <strong>{{if $e.Elu.ContactOfficiel}}{{$e.Elu.ContactOfficiel}}{{else}}{{t "equipe.obs.preavis.sans_contact"}}{{end}}</strong></p>
+    <p class="note">{{t "equipe.obs.preavis.aucun_envoi"}}</p>
+    {{- if or (a $m "redacteur") (a $m "relecteur")}}
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/preavis">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="envoye_le">{{t "equipe.obs.preavis.envoye_le"}}</label>
+        <input id="envoye_le" name="envoye_le" type="date" required value="{{index $obs.Saisie "envoye_le"}}">
+      </div>
+      <div class="champ">
+        <label for="moyen">{{t "equipe.obs.preavis.moyen"}}</label>
+        <textarea id="moyen" name="moyen" maxlength="500" required>{{index $obs.Saisie "moyen"}}</textarea>
+        <p class="aide">{{t "equipe.obs.preavis.moyen.aide"}}</p>
+      </div>
+      <button class="btn" type="submit">{{t "equipe.obs.preavis.bouton"}}</button>
+    </form>
+    {{- end}}
+    {{- end}}
+
+    {{- with .PreavisEnvoye}}
+    <h2>{{t "equipe.obs.preavis"}}</h2>
+    <dl class="params">
+      <div><dt>{{t "equipe.obs.preavis.envoye"}}</dt><dd>{{jour .EnvoyeLe}}</dd></div>
+      <div><dt>{{t "equipe.obs.preavis.echeance"}}</dt><dd>{{jour .Echeance}}</dd></div>
+      <div><dt>{{t "equipe.obs.preavis.enregistre"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}}</dd></div>
+      <div><dt>{{t "equipe.obs.preavis.moyen"}}</dt><dd>{{.Moyen}}</dd></div>
+      <div><dt>{{t "equipe.obs.preavis.dossier_sha256"}}</dt><dd><a href="/equipe/observatoire/statuts/{{$obs.Statut.ID}}/dossier.pdf">{{t "equipe.obs.preavis.dossier_envoye"}}</a> <code class="empreinte">{{.Dossier}}</code></dd></div>
+    </dl>
+    {{- end}}
+
+    {{- if or (eq (print .Etape) "valide") (eq (print .Etape) "preavis")}}
+    {{- if or (not .Valeur.DemandePreavis) .PreavisEnvoye}}
     <h2>{{t "equipe.obs.statut.publier"}}</h2>
-    {{- if or (eq (print .Valeur) "tenu") (eq (print .Valeur) "en_cours")}}
+    {{- if $e.ReponseEnAttente .ID}}
+    <p class="note">{{t "obs.erreur.reponse_en_attente"}}</p>
+    {{- else if and .PreavisEnvoye (avant $obs.Aujourdhui .PreavisEnvoye.Echeance)}}
+    <p class="note">{{tf "equipe.obs.preavis.publiable_le" (jour .PreavisEnvoye.Echeance)}}</p>
+    {{- else}}
     <p>{{t "equipe.obs.statut.publier.aide"}}</p>
     <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/publier">
       <input type="hidden" name="csrf" value="{{$csrf}}">
       <button class="btn" type="submit">{{t "equipe.obs.statut.publier.bouton"}}</button>
     </form>
-    {{- else}}
-    <p class="note">{{t "obs.erreur.preavis"}}</p>
+    {{- end}}
+    {{- end}}
+    {{- end}}
+
+    {{- if .PreavisEnvoye}}
+    <h2>{{t "equipe.obs.reponses"}}</h2>
+    {{- range $e.ReponsesAu .ID}}{{template "obs_ligne_reponse" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.reponses.aucune"}}</p>
+    {{- end}}
+    {{- if a $m "redacteur"}}
+    <h3>{{t "equipe.obs.reponse.saisir"}}</h3>
+    <p>{{t "equipe.obs.reponse.saisir.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/reponses">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="texte">{{t "equipe.obs.reponse.texte"}}</label>
+        <textarea id="texte" name="texte" maxlength="10000" required>{{index $obs.Saisie "texte"}}</textarea>
+        <p class="aide">{{t "equipe.obs.reponse.texte.aide"}}</p>
+      </div>
+      <fieldset class="champ">
+        <legend>{{t "equipe.obs.reponse.canal"}}</legend>
+        {{- range $obs.Canaux}}
+        <label class="choix"><input type="radio" name="canal" value="{{.}}" required{{if eq (print .) (index $obs.Saisie "canal")}} checked{{end}}> {{canal .}}</label>
+        {{- end}}
+      </fieldset>
+      <div class="champ">
+        <label for="canal_detail">{{t "equipe.obs.reponse.canal_detail"}}</label>
+        <textarea id="canal_detail" name="canal_detail" maxlength="500" required>{{index $obs.Saisie "canal_detail"}}</textarea>
+        <p class="aide">{{t "equipe.obs.reponse.canal_detail.aide"}}</p>
+      </div>
+      <div class="champ">
+        <label for="recu_le">{{t "equipe.obs.reponse.recu_le"}}</label>
+        <input id="recu_le" name="recu_le" type="date" required value="{{index $obs.Saisie "recu_le"}}">
+      </div>
+      <button class="btn" type="submit">{{t "equipe.obs.reponse.bouton"}}</button>
+    </form>
     {{- end}}
     {{- end}}
     {{- end}}{{end}}

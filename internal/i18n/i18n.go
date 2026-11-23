@@ -168,6 +168,11 @@ func (c *Catalogue) Date(t time.Time) string {
 	return c.F("format.date", t.Day(), mois, t.Year())
 }
 
+// DateCourte écrit un jour en chiffres, par exemple « 15/01/2027 ».
+func (c *Catalogue) DateCourte(t time.Time) string {
+	return c.F("format.date_courte", t.Day(), int(t.Month()), t.Year())
+}
+
 // Heure écrit une heure de la journée donnée comme durée depuis minuit.
 func (c *Catalogue) Heure(d time.Duration) string {
 	return c.F("format.heure", int(d.Hours()), int(d.Minutes())%60)

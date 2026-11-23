@@ -21,14 +21,29 @@
 
     <h2>{{t "obs.fiche.sources"}}</h2>
     {{- range .Sources}}{{template "source" .}}{{end}}
+    {{- $fiche := .}}
+
+    {{- if .Reponses}}
+    <h2 id="droit-de-reponse">{{t "obs.reponse.titre"}}</h2>
+    <p>{{t "obs.reponse.chapeau"}}</p>
+    {{- range .Reponses}}
+    <div class="droit-reponse" id="reponse-{{.ID}}">
+      <div class="reponse">{{.Texte}}</div>
+      <p class="empreintes">{{tf "obs.reponse.meta" (date .RecuLe) (canal .Canal) (date .Publication.Le)}} · <a href="/journal">{{tf "obs.fiche.entree" (nombre .Publication.JournalNumero)}}</a></p>
+    </div>
+    {{- end}}
+    {{- end}}
 
     <h2>{{t "obs.fiche.historique"}}</h2>
     <p>{{t "obs.fiche.historique.chapeau"}}</p>
     <ol class="historique">
-    {{- range .Statuts}}
+    {{- range .Statuts}}{{$st := .}}
       <li class="entree" id="statut-{{.ID}}">
         <h3><span class="valeur">{{valeur .Valeur}}</span> · {{tf "obs.publie_le" (date .Publication.Le)}}</h3>
         <p>{{.Explication}}</p>
+        {{- with .PreavisEnvoye}}
+        <p class="sollicite">{{if $fiche.ReponsesAu $st.ID}}{{tf "obs.preavis.reponse" (datecourte .EnvoyeLe)}} <a href="#droit-de-reponse">{{t "obs.preavis.voir_reponse"}}</a>{{else}}{{tf "obs.preavis.sans_reponse" (datecourte .EnvoyeLe)}}{{end}}</p>
+        {{- end}}
         <dl class="params">
           <div><dt>{{t "obs.fiche.redige"}}</dt><dd>{{tf "obs.fiche.par_le" .Redige.ParNom (date .Redige.Le)}}</dd></div>
           <div><dt>{{t "obs.fiche.valide"}}</dt><dd>{{tf "obs.fiche.par_le" .Validation.ParNom (date .Validation.Le)}}</dd></div>

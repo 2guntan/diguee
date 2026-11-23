@@ -450,10 +450,12 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 			}
 			return c.Date(d.Jour)
 		},
-		"valeur":  func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
-		"extrait": extrait,
-		"taille":  func(n int64) string { return Taille(c, n) },
-		"liste":   func(xs []string) string { return strings.Join(xs, c.T("format.liste.separateur")) },
+		"valeur":     func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
+		"canal":      func(x observatoire.Canal) string { return c.T("obs.canal." + string(x)) },
+		"datecourte": c.DateCourte,
+		"extrait":    extrait,
+		"taille":     func(n int64) string { return Taille(c, n) },
+		"liste":      func(xs []string) string { return strings.Join(xs, c.T("format.liste.separateur")) },
 		"multiplicateur": func(f float64) string {
 			return c.F("format.multiplicateur", strconv.FormatFloat(f, 'f', -1, 64))
 		},

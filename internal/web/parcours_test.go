@@ -1054,7 +1054,8 @@ func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, nume
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := observatoire.NouveauService(b, d, 1<<20, nil)
+	maintenant := time.Now().UTC()
+	o := observatoire.NouveauService(b, d, 1<<20, func() time.Time { return maintenant })
 	jour := func(s string) time.Time { j, _ := time.Parse(time.DateOnly, s); return j }
 	elu, err := o.SaisirElu(ctx, a, observatoire.SaisieElu{Nom: "Élu", Fonction: "Maire",
 		Mandat: observatoire.Mandat{Debut: jour("2022-01-01"), Fin: jour("2027-01-01")}})
@@ -1081,9 +1082,34 @@ func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, nume
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Ticket #14 : un « non tenu » préavisé, un droit de réponse vérifié, puis
+	// la publication au 15e jour.
+	nt, err := o.RedigerStatut(ctx, a, eng, observatoire.NonTenu, "Rien à 10:30.", []int64{src.ID})
+	if err == nil {
+		err = errors.Join(o.Proposer(ctx, a, nt), o.Valider(ctx, m, nt))
+	}
+	if err == nil {
+		err = o.EnregistrerPreavis(ctx, a, nt, maintenant, "Courriel de 10:30")
+	}
+	var dr int64
+	if err == nil {
+		dr, err = o.SaisirReponse(ctx, a, nt, observatoire.SaisieReponse{Texte: "Réponse de 10:30.", Canal: observatoire.CourrierSigne,
+			CanalDetail: "Lettre", RecuLe: maintenant})
+	}
+	if err == nil {
+		_, err = o.VerifierReponse(ctx, m, dr)
+	}
+	if err == nil {
+		maintenant = maintenant.AddDate(0, 0, 15)
+		_, err = o.Publier(ctx, m, nt)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	dump := pgDump(t, sc)
 	tables := []string{"elu", "source", "engagement", "engagement_source", "engagement_validation", "statut",
-		"statut_preuve", "statut_proposition", "statut_validation", "statut_rejet", "statut_publication"}
+		"statut_preuve", "statut_proposition", "statut_validation", "statut_rejet", "statut_publication",
+		"statut_preavis", "droit_reponse", "droit_reponse_verification", "droit_reponse_rejet", "droit_reponse_publication"}
 	donnees := regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")
 	donnees = regexp.MustCompile(`(?s)CREATE TABLE \S+\.journal_public \(.*?\n\);\n`).ReplaceAllString(donnees, "")
 	donnees = regexp.MustCompile(`(?s)COPY \S+\.journal_public .*?\n\\\.\n`).ReplaceAllString(donnees, "")
@@ -1112,7 +1138,8 @@ func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, nume
 			t.Errorf("dump avec l'observatoire : horodatage ou séquence %q", m)
 		}
 	}
-	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 2 || !strings.Contains(strings.Join(lj[1], "\t"), "statut_publie") {
+	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 4 || !strings.Contains(strings.Join(lj[1], "\t"), "statut_publie") ||
+		!strings.Contains(strings.Join(lj[3], "\t"), "droit_de_reponse") {
 		t.Errorf("journal public après la publication d'un statut : %d entrée(s)", len(lj))
 	}
 }

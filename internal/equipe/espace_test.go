@@ -114,6 +114,8 @@ func nouveauBanc(t *testing.T) *banc {
 		t.Fatal(err)
 	}
 	obs := observatoire.NouveauService(b, archives, 64<<10, hl.Maintenant)
+	obs.ReglerPreavis(observatoire.ReglagesPreavis{Jours: cfg.PreavisJours, AdresseReponse: cfg.AdresseReponse.Valeur,
+		Textes: cs.Choisir(i18n.Reference)})
 	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal,
 		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest(), Observatoire: obs,
 		ServirArchive: func(w http.ResponseWriter, r *http.Request, introuvable func()) {
@@ -180,6 +182,7 @@ type reponse struct {
 	statut   int
 	corps    string
 	location string
+	entetes  http.Header
 }
 
 var reCSRF = regexp.MustCompile(`name="csrf" value="([^"]*)"`)
@@ -205,7 +208,7 @@ func (c *client) faire(req *http.Request) reponse {
 		}
 	}
 	corps, _ := io.ReadAll(res.Body)
-	return reponse{statut: res.StatusCode, corps: string(corps), location: res.Header.Get("Location")}
+	return reponse{statut: res.StatusCode, corps: string(corps), location: res.Header.Get("Location"), entetes: res.Header}
 }
 
 func (c *client) get(chemin string) reponse {

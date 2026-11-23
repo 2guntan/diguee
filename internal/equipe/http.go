@@ -23,7 +23,7 @@ import (
 var fichiersGabarits embed.FS
 
 var pagesEquipe = []string{"connexion", "accueil", "membres", "acces", "audit", "interdit", "introuvable", "sms", "ancrage",
-	"obs_tableau", "obs_elus", "obs_sources", "obs_nouvel_engagement", "obs_engagement", "obs_statut"}
+	"obs_tableau", "obs_elus", "obs_sources", "obs_nouvel_engagement", "obs_engagement", "obs_statut", "obs_reponse"}
 
 // nomCookieConnexion porte le jeton CSRF du formulaire de connexion, avant
 // toute session (protection contre la connexion forcée).
@@ -507,15 +507,18 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 			t = t.UTC()
 			return c.F("format.date_heure", c.Date(t), c.Heure(time.Duration(t.Hour())*time.Hour+time.Duration(t.Minute())*time.Minute))
 		},
-		"duree":  c.Duree,
-		"nombre": func(n int64) string { return c.Nombre(n) },
-		"entier": func(n int) string { return c.Nombre(int64(n)) },
-		"role":   func(r Role) string { return c.T("equipe.role." + string(r)) },
-		"action": func(a TypeAction) string { return c.T("equipe.action." + string(a)) },
-		"a":      func(m Membre, r Role) bool { return m.A(r) },
-		"valeur": func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
-		"etape":  func(x observatoire.Etape) string { return c.T("obs.etape." + string(x)) },
-		"taille": func(n int64) string { return c.F("format.ko", c.Nombre((n+1023)/1024)) },
-		"mo":     func(n int64) string { return c.Nombre(n >> 20) },
+		"duree":        c.Duree,
+		"nombre":       func(n int64) string { return c.Nombre(n) },
+		"entier":       func(n int) string { return c.Nombre(int64(n)) },
+		"role":         func(r Role) string { return c.T("equipe.role." + string(r)) },
+		"action":       func(a TypeAction) string { return c.T("equipe.action." + string(a)) },
+		"a":            func(m Membre, r Role) bool { return m.A(r) },
+		"valeur":       func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
+		"etape":        func(x observatoire.Etape) string { return c.T("obs.etape." + string(x)) },
+		"etapeReponse": func(x observatoire.EtapeReponse) string { return c.T("obs.reponse.etape." + string(x)) },
+		"canal":        func(x observatoire.Canal) string { return c.T("obs.canal." + string(x)) },
+		"avant":        func(a, b time.Time) bool { return a.Before(b) },
+		"taille":       func(n int64) string { return c.F("format.ko", c.Nombre((n+1023)/1024)) },
+		"mo":           func(n int64) string { return c.Nombre(n >> 20) },
 	}
 }

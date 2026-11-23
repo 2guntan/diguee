@@ -28,6 +28,7 @@ func complete(env string) map[string]string {
 		"DIGUEE_NUMERO_WHATSAPP":   "+221700000000",
 		"DIGUEE_OUVERTURE":         "2027-01-15",
 		"DIGUEE_POPULATION_ANSD":   "/etc/diguee/population-ansd.json",
+		"DIGUEE_ADRESSE_REPONSE":   "droit-de-reponse@diguee.example",
 	}
 }
 
@@ -74,8 +75,8 @@ func TestDeveloppementToleré(t *testing.T) {
 	if err := Verifier(c, &r); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(Manques(c, &r)); n != 9 {
-		t.Errorf("%d manques, attendu 9 (8 valeurs et 1 intégration)", n)
+	if n := len(Manques(c, &r)); n != 10 {
+		t.Errorf("%d manques, attendu 10 (9 valeurs et 1 intégration)", n)
 	}
 }
 

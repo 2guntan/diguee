@@ -16,9 +16,22 @@
 // en publiant un nouveau statut qui l'explique.
 //
 // La règle des quatre yeux est vérifiée ici (Service) et imposée par la base
-// (contraintes CHECK). Ce ticket ne publie que « tenu » et « en cours » :
-// « non tenu » et « partiel » attendent le préavis (ticket #14), et la base
-// les refuse elle aussi.
+// (contraintes CHECK).
+//
+// « Non tenu » et « partiel » demandent en plus un préavis (ticket #14,
+// migration 0008) : la plateforme prépare le dossier de l'élu en PDF, un
+// membre l'envoie lui-même par le canal officiel de l'élu (la plateforme
+// n'envoie jamais rien) et enregistre la date d'envoi ; le statut n'est
+// publiable qu'à partir de l'échéance (DIGUEE_PREAVIS_JOURS jours plus
+// tard, 15 au moins), ce que la base impose aussi :
+//
+//	validé (non tenu, partiel) → préavis envoyé (J) → J+15 → publié
+//	                                └ droit de réponse saisi → vérifié (par un autre membre) → publié
+//	                                                         └ rejeté (par un autre membre, avec un motif)
+//
+// Un droit de réponse vérifié est publié tel quel avec le statut, ou dès sa
+// vérification si le statut est déjà publié ; chaque publication est
+// inscrite au journal public dans la même transaction.
 package observatoire
 
 import (
@@ -57,6 +70,9 @@ func (v Valeur) Valide() bool {
 // de DIGUEE_PREAVIS_JOURS jours à l'élu (ticket #14).
 func (v Valeur) PubliableSansPreavis() bool { return v == Tenu || v == EnCours }
 
+// DemandePreavis indique les valeurs qui demandent un préavis à l'élu.
+func (v Valeur) DemandePreavis() bool { return v.Valide() && !v.PubliableSansPreavis() }
+
 // Etape est l'étape atteinte par un statut.
 type Etape string
 
@@ -65,6 +81,7 @@ const (
 	Propose   Etape = "propose"
 	Valide    Etape = "valide"
 	Rejete    Etape = "rejete"
+	Preavis   Etape = "preavis" // préavis envoyé à l'élu (non tenu, partiel)
 	Publie    Etape = "publie"
 )
 
@@ -136,6 +153,32 @@ type Engagement struct {
 	// Statuts : tous pour l'équipe (par identifiant) ; les seuls statuts
 	// publiés, dans l'ordre de publication, sur les pages publiques.
 	Statuts []Statut
+	// Reponses : les droits de réponse de l'élu ; tous pour l'équipe (par
+	// identifiant), les seuls publiés, dans l'ordre de publication, sur les
+	// pages publiques.
+	Reponses []DroitReponse
+}
+
+// ReponsesAu renvoie les droits de réponse à un statut.
+func (e Engagement) ReponsesAu(statut int64) []DroitReponse {
+	var rs []DroitReponse
+	for _, r := range e.Reponses {
+		if r.StatutID == statut {
+			rs = append(rs, r)
+		}
+	}
+	return rs
+}
+
+// ReponseEnAttente indique qu'un droit de réponse au statut attend sa
+// vérification : le statut n'est pas publié avant.
+func (e Engagement) ReponseEnAttente(statut int64) bool {
+	for _, r := range e.ReponsesAu(statut) {
+		if r.Etape() == ReponseSaisie {
+			return true
+		}
+	}
+	return false
 }
 
 // Dernier renvoie le dernier statut publié, ou nil.
@@ -162,16 +205,28 @@ type Publication struct {
 
 // Statut est l'état d'un engagement à une date donnée, avec ses preuves.
 type Statut struct {
-	ID           int64
-	EngagementID int64
-	Valeur       Valeur
-	Explication  string
-	Redige       Acte
-	Preuves      []Source
-	Proposition  *Acte
-	Validation   *Acte
-	Rejet        *Rejet
-	Publication  *Publication
+	ID            int64
+	EngagementID  int64
+	Valeur        Valeur
+	Explication   string
+	Redige        Acte
+	Preuves       []Source
+	Proposition   *Acte
+	Validation    *Acte
+	Rejet         *Rejet
+	PreavisEnvoye *PreavisEnvoye // nil sans préavis
+	Publication   *Publication
+}
+
+// PreavisEnvoye est l'envoi du dossier à l'élu, enregistré par un membre
+// (Acte) : la date d'envoi, l'échéance à partir de laquelle le statut est
+// publiable, comment il a été envoyé et le SHA-256 du dossier PDF envoyé.
+type PreavisEnvoye struct {
+	Acte
+	EnvoyeLe time.Time
+	Echeance time.Time
+	Moyen    string // jamais publié
+	Dossier  stockage.Empreinte
 }
 
 // Etape renvoie la dernière étape franchie.
@@ -181,12 +236,76 @@ func (s Statut) Etape() Etape {
 		return Publie
 	case s.Rejet != nil:
 		return Rejete
+	case s.PreavisEnvoye != nil:
+		return Preavis
 	case s.Validation != nil:
 		return Valide
 	case s.Proposition != nil:
 		return Propose
 	default:
 		return Brouillon
+	}
+}
+
+// Canal est le canal vérifiable par lequel un droit de réponse est reçu.
+type Canal string
+
+const (
+	AdresseOfficielle Canal = "adresse_officielle" // courriel ou adresse officielle de l'élu
+	CourrierSigne     Canal = "courrier_signe"     // courrier signé
+	CompteOfficiel    Canal = "compte_officiel"    // compte officiel de l'élu sur un réseau
+)
+
+// Canaux est la liste des canaux acceptés.
+var Canaux = []Canal{AdresseOfficielle, CourrierSigne, CompteOfficiel}
+
+// Valide indique un canal accepté.
+func (c Canal) Valide() bool {
+	for _, x := range Canaux {
+		if c == x {
+			return true
+		}
+	}
+	return false
+}
+
+// EtapeReponse est l'étape atteinte par un droit de réponse.
+type EtapeReponse string
+
+const (
+	ReponseSaisie   EtapeReponse = "saisie"
+	ReponseVerifiee EtapeReponse = "verifiee"
+	ReponseRejetee  EtapeReponse = "rejetee"
+	ReponsePubliee  EtapeReponse = "publiee"
+)
+
+// DroitReponse est le texte de l'élu, reçu par un canal vérifiable,
+// recopié tel quel par le membre qui l'a reçu (Saisi), vérifié par un
+// autre membre, puis publié sans commentaire.
+type DroitReponse struct {
+	ID           int64
+	StatutID     int64
+	Texte        string
+	Canal        Canal
+	CanalDetail  string // référence du canal (adresse, compte, courrier) ; jamais publiée
+	RecuLe       time.Time
+	Saisi        Acte
+	Verification *Acte
+	Rejet        *Rejet
+	Publication  *Publication
+}
+
+// Etape renvoie la dernière étape franchie.
+func (r DroitReponse) Etape() EtapeReponse {
+	switch {
+	case r.Publication != nil:
+		return ReponsePubliee
+	case r.Rejet != nil:
+		return ReponseRejetee
+	case r.Verification != nil:
+		return ReponseVerifiee
+	default:
+		return ReponseSaisie
 	}
 }
 
@@ -213,6 +332,10 @@ type Liste struct {
 // publication, l'entrée du statut, et renvoie son numéro.
 type Journaliser func(ctx context.Context, m journal.Magasin, e *Engagement, s *Statut) (int64, error)
 
+// JournaliserReponse inscrit au journal public, dans la transaction de sa
+// publication, l'entrée d'un droit de réponse, et renvoie son numéro.
+type JournaliserReponse func(ctx context.Context, m journal.Magasin, e *Engagement, s *Statut, r *DroitReponse) (int64, error)
+
 // Magasin conserve l'observatoire (implémenté par base.Base). Chaque
 // écriture est une insertion ; la base vérifie à nouveau toutes les règles.
 type Magasin interface {
@@ -237,8 +360,22 @@ type Magasin interface {
 	Valider(ctx context.Context, statut int64, a Acte) error
 	Rejeter(ctx context.Context, statut int64, a Acte, motif string) error
 	// Publier inscrit la publication et l'entrée du journal public dans la
-	// même transaction, sous verrou, après avoir relu l'engagement.
-	Publier(ctx context.Context, statut int64, a Acte, j Journaliser) (int64, error)
+	// même transaction, sous verrou, après avoir relu l'engagement ; puis,
+	// dans la même transaction, chaque droit de réponse vérifié au statut,
+	// avec son entrée (jr).
+	Publier(ctx context.Context, statut int64, a Acte, j Journaliser, jr JournaliserReponse) (int64, error)
+	// EnregistrerPreavis inscrit l'envoi du dossier d'un statut validé.
+	EnregistrerPreavis(ctx context.Context, statut int64, p PreavisEnvoye) error
+	// SaisirReponse enregistre un droit de réponse à un statut préavisé.
+	SaisirReponse(ctx context.Context, r DroitReponse) (int64, error)
+	// EngagementDeLaReponse renvoie l'identifiant de l'engagement d'un droit
+	// de réponse.
+	EngagementDeLaReponse(ctx context.Context, reponse int64) (int64, error)
+	// VerifierReponse inscrit la vérification ; si le statut est déjà
+	// publié, publie aussitôt le droit de réponse avec son entrée du journal
+	// (jr), dans la même transaction. Renvoie le numéro de l'entrée, ou 0.
+	VerifierReponse(ctx context.Context, reponse int64, a Acte, jr JournaliserReponse) (int64, error)
+	RejeterReponse(ctx context.Context, reponse int64, a Acte, motif string) error
 
 	// Pages publiques : seuls les engagements validés qui ont au moins un
 	// statut publié, et seuls leurs statuts publiés.

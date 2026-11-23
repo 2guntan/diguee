@@ -52,6 +52,15 @@ const (
 	ErrPasLeRedacteur Erreur = "obs.erreur.pas_le_redacteur"
 	ErrQuatreYeux     Erreur = "obs.erreur.quatre_yeux"
 	ErrPreavis        Erreur = "obs.erreur.preavis"
+	ErrPreavisEnCours Erreur = "obs.erreur.preavis_en_cours"
+	ErrSansPreavis    Erreur = "obs.erreur.sans_preavis"
+	ErrDateEnvoi      Erreur = "obs.erreur.date_envoi"
+	ErrMoyen          Erreur = "obs.erreur.moyen"
+	ErrReponseAttente Erreur = "obs.erreur.reponse_en_attente"
+	ErrTexteReponse   Erreur = "obs.erreur.texte_reponse"
+	ErrCanal          Erreur = "obs.erreur.canal"
+	ErrCanalDetail    Erreur = "obs.erreur.canal_detail"
+	ErrDateReception  Erreur = "obs.erreur.date_reception"
 	ErrJournalRefuse  Erreur = "obs.erreur.journal"
 	ErrStockage       Erreur = "obs.erreur.stockage"
 	ErrArchiveAlteree Erreur = "obs.erreur.archive_alteree"
@@ -81,16 +90,24 @@ type Service struct {
 	st         stockage.Stockage
 	tailleMax  int64
 	maintenant func() time.Time
+	preavis    ReglagesPreavis
 }
 
 // NouveauService renvoie le service. tailleMax borne une copie archivée
-// (DIGUEE_ARCHIVE_TAILLE_MO) ; maintenant vaut time.Now si nil.
+// (DIGUEE_ARCHIVE_TAILLE_MO) ; maintenant vaut time.Now si nil. Le préavis
+// suit les réglages par défaut (DelaiMinimal jours, adresse de réponse « À
+// COMPLÉTER », textes de repli) tant que ReglerPreavis n'est pas appelé.
 func NouveauService(m Magasin, st stockage.Stockage, tailleMax int64, maintenant func() time.Time) *Service {
 	if maintenant == nil {
 		maintenant = time.Now
 	}
-	return &Service{m: m, st: st, tailleMax: tailleMax, maintenant: maintenant}
+	s := &Service{m: m, st: st, tailleMax: tailleMax, maintenant: maintenant}
+	s.ReglerPreavis(ReglagesPreavis{})
+	return s
 }
+
+// Aujourdhui renvoie le jour courant (UTC), d'après l'horloge du service.
+func (s *Service) Aujourdhui() time.Time { return s.jour() }
 
 // TailleMax renvoie la taille maximale d'une copie archivée, en octets.
 func (s *Service) TailleMax() int64 { return s.tailleMax }
@@ -369,22 +386,23 @@ func (s *Service) Rejeter(ctx context.Context, acteur string, statut int64, moti
 }
 
 // Publier publie un statut validé et l'inscrit au journal public, dans la
-// même transaction. Seuls « tenu » et « en cours » sont publiables dans ce
-// ticket (ErrPreavis sinon). Renvoie le numéro de l'entrée du journal.
+// même transaction. « Non tenu » et « partiel » ne sont publiables qu'avec
+// un préavis enregistré (ErrSansPreavis) et échu (ErrPreavisEnCours) ; aucun
+// statut n'est publié tant qu'un droit de réponse attend sa vérification
+// (ErrReponseAttente). Les droits de réponse vérifiés sont publiés avec le
+// statut. Renvoie le numéro de l'entrée du journal du statut.
 func (s *Service) Publier(ctx context.Context, acteur string, statut int64) (int64, error) {
-	_, st, err := s.Statut(ctx, statut)
-	switch {
-	case err != nil:
+	e, st, err := s.Statut(ctx, statut)
+	if err != nil {
 		return 0, err
-	case st.Etape() != Valide:
-		return 0, ErrEtape
-	case !st.Valeur.PubliableSansPreavis():
-		return 0, ErrPreavis
+	}
+	if err := s.publiable(e, st); err != nil {
+		return 0, err
 	}
 	a := s.acte(acteur)
 	return s.m.Publier(ctx, statut, a, func(ctx context.Context, jm journal.Magasin, e *Engagement, st *Statut) (int64, error) {
-		if st.Validation == nil || st.Etape() != Valide || !st.Valeur.PubliableSansPreavis() {
-			return 0, ErrEtape
+		if err := s.publiable(e, st); err != nil {
+			return 0, err
 		}
 		c, err := ContenuJournal(e, st)
 		if err != nil {
@@ -395,7 +413,22 @@ func (s *Service) Publier(ctx context.Context, acteur string, statut int64) (int
 			return 0, fmt.Errorf("%w : %w", ErrJournalRefuse, err)
 		}
 		return ent.Numero, nil
-	})
+	}, s.journaliserReponse)
+}
+
+// publiable vérifie qu'un statut peut être publié aujourd'hui.
+func (s *Service) publiable(e *Engagement, st *Statut) error {
+	switch {
+	case st.Validation == nil || (st.Etape() != Valide && st.Etape() != Preavis):
+		return ErrEtape
+	case st.Valeur.DemandePreavis() && st.PreavisEnvoye == nil:
+		return ErrSansPreavis
+	case st.Valeur.DemandePreavis() && s.jour().Before(st.PreavisEnvoye.Echeance):
+		return ErrPreavisEnCours
+	case e.ReponseEnAttente(st.ID):
+		return ErrReponseAttente
+	}
+	return nil
 }
 
 // ContenuStatut est le contenu de l'entrée « statut publié » du journal
@@ -412,6 +445,11 @@ type ContenuStatut struct {
 	Sources    []string `json:"sources_sha256"`
 	Preuves    []string `json:"preuves_sha256"`
 	Texte      string   `json:"texte_sha256"`
+	// Préavis (non tenu, partiel) : date d'envoi du dossier à l'élu
+	// (AAAA-MM-JJ), son échéance, et le SHA-256 du dossier envoyé.
+	PreavisEnvoyeLe string `json:"preavis_envoye_le,omitempty"`
+	PreavisEcheance string `json:"preavis_echeance,omitempty"`
+	Dossier         string `json:"dossier_sha256,omitempty"`
 }
 
 // Texte est ce que résume ContenuStatut.Texte : le SHA-256 du JSON canonique
@@ -449,6 +487,10 @@ func ContenuJournal(e *Engagement, st *Statut) (ContenuStatut, error) {
 	}
 	for _, p := range st.Preuves {
 		c.Preuves = append(c.Preuves, p.Archive.String())
+	}
+	if p := st.PreavisEnvoye; p != nil {
+		c.PreavisEnvoyeLe, c.PreavisEcheance = p.EnvoyeLe.Format(time.DateOnly), p.Echeance.Format(time.DateOnly)
+		c.Dossier = p.Dossier.String()
 	}
 	return c, nil
 }

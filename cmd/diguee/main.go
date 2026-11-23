@@ -256,6 +256,10 @@ func lancer(args []string, journal *slog.Logger) error {
 	// l'espace équipe, pages publiques sous /observatoire ; chaque
 	// publication de statut est inscrite au journal public.
 	obs := observatoire.NouveauService(b, archives, cfg.ArchiveTailleMax, nil)
+	// Préavis (ticket #14) : la plateforme prépare le dossier de l'élu en
+	// PDF ; un membre l'envoie lui-même et enregistre la date d'envoi.
+	obs.ReglerPreavis(observatoire.ReglagesPreavis{Jours: cfg.PreavisJours, AdresseReponse: cfg.AdresseReponse.Valeur,
+		Textes: catalogues.Choisir(i18n.Reference)})
 	optionsEspace := equipe.OptionsEspace{
 		Service: serviceEquipe, Sessions: sessionsEquipe, Magasin: b, Catalogues: catalogues, Journal: journal,
 		Ancrage: ancreur, Observatoire: obs,
