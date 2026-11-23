@@ -148,10 +148,24 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
 - **Diaspora** : seuls les numéros +221 sont acceptés en phase 1. La méthodologie le précise.
 - **Seuils de publication** : au moins 30 réponses par case, sinon la case affiche « moins de 30 réponses ». Les cases sont publiées en pourcentages arrondis à l'unité, et seuls les effectifs globaux, arrondis à la dizaine, apparaissent. Masquage complémentaire : si une seule case d'une ligne est masquée, la plus petite des autres l'est aussi. Pas de pondération en phase 1 : les résultats sont bruts, publiés à côté de la composition de l'échantillon et des chiffres de l'ANSD. Ces paramètres figurent dans la méthodologie publiée.
 
-### Restent à faire avant la spécification
+### Restent à faire avant la spécification (état au 23/11/2026)
 
-- Vérifier que la signature RSA du KMS OVHcloud est bien déterministe (prérequis de l'ADR 0006), et confirmer ses tarifs.
-- Rédiger la liste fermée des thèmes et fixer les tranches d'âge, avec le porteur ou l'institut de sondage.
-- Confirmer auprès de l'ARTP la liste des préfixes mobiles.
-- Vérifier la grille tarifaire de Meta pour les messages entrants et les messages d'authentification au Sénégal.
-- Recopier `site/index.html` (FAQ corrigée) dans `public_html/` chez PlanetHoster.
+1. **KMS OVHcloud.**
+   - Le KMS propose RS256/384/512 (RSASSA-PKCS1-v1_5) et PS256/384/512 (RSASSA-PSS).
+   - Il faut utiliser **RS256** : selon la RFC 8017, PKCS#1 v1.5 est déterministe, alors que PSS est aléatoire et donc inutilisable pour l'empreinte.
+   - Un SDK Go officiel existe (`github.com/ovh/okms-sdk-go`), et la permission requise est `kms:serviceKey/sign`.
+   - **Reste à faire** : un test réel sur un compte d'essai, où le même numéro signé deux fois doit donner la même signature. Le porteur doit d'abord ouvrir le compte.
+2. **Tranches d'âge et thèmes.** Un brouillon est à valider par le porteur ou par l'institut de sondage.
+   - Âge : 18-24, 25-34, 35-49, 50-64, 65 ans et plus. Il faut avoir au moins 18 ans, l'âge du vote. Ces tranches se recomposent à partir des tranches quinquennales de l'ANSD.
+   - Thèmes (choisir 3) : emploi des jeunes ; coût de la vie ; santé ; éducation ; justice et lutte contre la corruption ; agriculture, élevage et pêche ; eau, électricité et assainissement ; logement ; sécurité ; ressources naturelles (pétrole, gaz, mines) ; transports et routes. Pas de champ « autre ».
+3. **Préfixes mobiles.**
+   - Les sources secondaires se contredisent, et aucune ne cite directement l'ARTP. Les préfixes 70, 75, 76, 77 et 78 sont sûrs. Le 72 serait attribué à un opérateur plus récent (CSU/Hayo). La portabilité des numéros rend de toute façon l'opérateur indifférent.
+   - **Décision technique** : la liste blanche est un paramètre de configuration, pas une valeur codée en dur.
+   - Avec la vérification inversée (ADR 0009), c'est Meta qui fournit le numéro. La liste blanche sert surtout au secours par code.
+   - **Reste à faire** : confirmer la liste dans le plan national de numérotation de l'ARTP.
+4. **Tarifs Meta.**
+   - D'après des sources secondaires, la grille « Rest of Africa » au 1er octobre 2026 met un message d'authentification à environ **0,004 $**.
+   - Recevoir un message ne coûte rien, puisque Meta ne facture que les messages envoyés par l'entreprise. La vérification inversée (ADR 0009) revient donc à environ **0 $** si Diguee ne répond pas dans WhatsApp, et la confirmation s'affiche sur le site.
+   - Ordre de grandeur pour 100 000 participants : 0 $ avec la vérification inversée, environ 400 $ si tous passaient par le code de secours.
+   - **Reste à faire** : vérifier le tarif pour le Sénégal dans le gestionnaire WhatsApp de Meta, une fois le compte créé.
+5. Recopier `site/index.html` (FAQ corrigée) dans `public_html/` chez PlanetHoster.
