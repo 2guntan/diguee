@@ -23,6 +23,9 @@
 //	diguee cle-volume creer -sortie FICHIER | dechiffrer -entree FICHIER
 //	                        clé du volume chiffré (LUKS), chiffrée par le KMS
 //	                        d'OVHcloud (voir deploiement/README.md)
+//	diguee sauvegarde faire | lister | recuperer | supprimer-toutes | controler
+//	                        sauvegardes chiffrées de la base (age), conservées
+//	                        30 jours dans l'Object Storage (ticket #15)
 package main
 
 import (
@@ -55,6 +58,7 @@ import (
 	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
+	"github.com/2guntan/diguee/internal/sauvegarde"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
 	"github.com/2guntan/diguee/internal/stockage"
@@ -82,6 +86,16 @@ func main() {
 	// Défense en profondeur (spec E6, T3) : toute IP ou tout numéro qui
 	// apparaîtrait dans un message ou une erreur est masqué.
 	journal := slog.New(masque.Nouveau(slog.NewJSONHandler(os.Stderr, nil)))
+	if len(os.Args) > 1 && os.Args[1] == "sauvegarde" {
+		ctx, arreter := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := sauvegarder(ctx, os.Args[2:], os.Getenv, os.Stdout, journal)
+		arreter()
+		if err != nil {
+			journal.Error("diguee sauvegarde : " + err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 	if err := lancer(os.Args[1:], journal); err != nil {
 		journal.Error(err.Error())
 		os.Exit(1)
@@ -284,6 +298,12 @@ func lancer(args []string, journal *slog.Logger) error {
 		ServirArchive: func(w http.ResponseWriter, r *http.Request, introuvable func()) {
 			web.ServirArchive(w, r, obs, false, journal.Error, introuvable)
 		},
+	}
+	// Sauvegardes (ticket #15) : l'état écrit par diguee-sauvegarde.service
+	// est affiché aux administrateurs, en alerte si la dernière a échoué.
+	if cfg.SauvegardeEtat != "" {
+		chemin := cfg.SauvegardeEtat
+		optionsEspace.Sauvegardes = func() (*sauvegarde.Etat, error) { return sauvegarde.LireEtat(chemin) }
 	}
 	var coupeSMS *antifraude.CoupeCircuit
 	if integrationSMS.Envoyeur != nil {

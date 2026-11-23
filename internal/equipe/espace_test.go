@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base32"
 	"encoding/hex"
+	"errors"
 	"html"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -31,6 +33,7 @@ import (
 	"github.com/2guntan/diguee/internal/journal"
 	jnl "github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/observatoire"
+	"github.com/2guntan/diguee/internal/sauvegarde"
 	"github.com/2guntan/diguee/internal/stockage"
 	"github.com/2guntan/diguee/internal/totp"
 	"github.com/2guntan/diguee/internal/web"
@@ -73,15 +76,16 @@ func (j *journalSur) String() string {
 
 // banc : l'espace équipe monté dans le serveur web, comme en production.
 type banc struct {
-	h        http.Handler
-	base     *base.Base
-	schema   basetest.Schema
-	service  *equipe.Service
-	sessions *equipe.Sessions
-	horloge  *horloge
-	journal  *journalSur
-	coupe    *antifraude.CoupeCircuit // coupe-circuit du parcours SMS
-	archives *stockage.Dossier
+	h               http.Handler
+	base            *base.Base
+	schema          basetest.Schema
+	service         *equipe.Service
+	sessions        *equipe.Sessions
+	horloge         *horloge
+	journal         *journalSur
+	coupe           *antifraude.CoupeCircuit // coupe-circuit du parcours SMS
+	archives        *stockage.Dossier
+	etatSauvegardes string // fichier d'état des sauvegardes (ticket #15)
 }
 
 func nouveauBanc(t *testing.T) *banc {
@@ -119,8 +123,10 @@ func nouveauBanc(t *testing.T) *banc {
 	obs := observatoire.NouveauService(b, archives, 64<<10, hl.Maintenant)
 	obs.ReglerPreavis(observatoire.ReglagesPreavis{Jours: cfg.PreavisJours, AdresseReponse: cfg.AdresseReponse.Valeur,
 		Textes: cs.Choisir(i18n.Reference)})
+	etatSauvegardes := filepath.Join(t.TempDir(), "etat.json")
 	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal,
-		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest(), Observatoire: obs,
+		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest(), Observatoire: obs, Maintenant: hl.Maintenant,
+		Sauvegardes: func() (*sauvegarde.Etat, error) { return sauvegarde.LireEtat(etatSauvegardes) },
 		ServirArchive: func(w http.ResponseWriter, r *http.Request, introuvable func()) {
 			web.ServirArchive(w, r, obs, false, journal.Error, introuvable)
 		}})
@@ -137,7 +143,8 @@ func nouveauBanc(t *testing.T) *banc {
 	// Le service refuse les codes du pas de démarrage (anti-rejeu après un
 	// redémarrage) : on commence au pas suivant.
 	hl.Avancer(totp.Periode)
-	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j, coupe: coupe, archives: archives}
+	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j, coupe: coupe, archives: archives,
+		etatSauvegardes: etatSauvegardes}
 }
 
 // compte est un membre créé pour le test, avec ses accès.
@@ -971,4 +978,50 @@ func TestTexteHebdomadairePourX(t *testing.T) {
 // du stockage (pour vérifier qu'elle n'est plus servie).
 func (b *banc) archivesAlterer(sha [32]byte) error {
 	return os.WriteFile(b.archives.Chemin+"/archives/"+hex.EncodeToString(sha[:]), []byte("altéré"), 0o600)
+}
+
+// L'état des sauvegardes nocturnes (ticket #15) est affiché aux seuls
+// administrateurs, en alerte si aucune n'est connue, si la dernière a échoué
+// ou si la dernière réussite date de plus de 27 heures.
+func TestEtatDesSauvegardes(t *testing.T) {
+	b := nouveauBanc(t)
+	admin := b.creer(t, "admin", equipe.Administrateur)
+	redac := b.creer(t, "redac", equipe.Redacteur, equipe.Relecteur)
+	ca, cr := b.client(t), b.client(t)
+	ca.connecterCompte(admin)
+	cr.connecterCompte(redac)
+	accueil := func(c *client) string { return html.UnescapeString(c.get("/equipe/").corps) }
+	if strings.Contains(accueil(cr), "Sauvegardes de la base") {
+		t.Error("état des sauvegardes montré à un non-administrateur")
+	}
+	if p := accueil(ca); !strings.Contains(p, "aucune sauvegarde n'a encore été faite") || !strings.Contains(p, `role="alert"`) {
+		t.Errorf("sans état :\n%s", p)
+	}
+	maintenant := b.horloge.Maintenant()
+	r := &sauvegarde.Resultat{Cle: sauvegarde.Cle(maintenant), Date: maintenant, Taille: 5 << 20}
+	if err := sauvegarde.Enregistrer(b.etatSauvegardes, maintenant, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p := accueil(ca); strings.Contains(p, "Alerte") || !strings.Contains(p, "Dernière sauvegarde réussie") {
+		t.Errorf("réussite :\n%s", p)
+	}
+	// Dernière réussite vieille de 28 heures (la session ne dure que 8 h :
+	// c'est l'état qui vieillit, pas l'horloge).
+	vieille := &sauvegarde.Resultat{Cle: sauvegarde.Cle(maintenant.Add(-28 * time.Hour)), Date: maintenant.Add(-28 * time.Hour), Taille: 5 << 20}
+	if err := sauvegarde.Enregistrer(b.etatSauvegardes, vieille.Date, vieille, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p := accueil(ca); !strings.Contains(p, "aucune sauvegarde réussie depuis plus de 27 heures") {
+		t.Errorf("retard :\n%s", p)
+	}
+	if err := sauvegarde.Enregistrer(b.etatSauvegardes, b.horloge.Maintenant(), nil, errors.New("sauvegarde : pg_dump a échoué (exit status 1) : rien n'est envoyé")); err != nil {
+		t.Fatal(err)
+	}
+	if p := accueil(ca); !strings.Contains(p, "a échoué\u00a0: sauvegarde : pg_dump a échoué") {
+		t.Errorf("échec :\n%s", p)
+	}
+	os.WriteFile(b.etatSauvegardes, []byte("{illisible"), 0o644)
+	if p := accueil(ca); !strings.Contains(p, "l'état des sauvegardes est illisible") {
+		t.Errorf("illisible :\n%s", p)
+	}
 }

@@ -14,6 +14,8 @@ Internet ──► pare-feu réseau OVHcloud (IPv4 : 80, 443, SSH depuis les adr
              └─ :22   sshd    (clé seulement, administrateur nommé)
 diguee ──socket Unix, « peer »──► PostgreSQL 16 (aucun port TCP), rôle diguee_app
 diguee-migrer ──socket Unix──► PostgreSQL, rôle diguee_proprietaire (utilisateur diguee-migrations)
+diguee-sauvegarde (02:30 UTC) ──socket Unix──► pg_dump, rôle diguee_sauvegarde (lecture seule)
+                  └─ | age (clé publique) ──HTTPS──► Object Storage, compartiment diguee-sauvegardes (30 jours)
 /srv/diguee-donnees  ◄── volume LUKS2 (fichier /var/lib/diguee-volume/donnees.luks)
                          clé de 64 octets chiffrée par le KMS (/etc/diguee/volume.cle.jwe)
 ```
@@ -30,12 +32,15 @@ Ordre au démarrage de la machine : `network-online.target` → `diguee-volume.s
 | `volume.sh` | Volume chiffré : `creer`, `ouvrir`, `secours`, `fermer`, `etat` | `/usr/local/lib/diguee/volume.sh` |
 | `commande.sh` | Lance une commande de `diguee` (`verifier-config`, `creer-membre`, `publier`, `ancrer`) dans le contexte du service, par `systemd-run` | `/usr/local/sbin/diguee-commande` |
 | `controle-journaux.sh` | Contrôle T3 : ni IP ni numéro dans les journaux | `/usr/local/sbin/diguee-controle-journaux` |
+| `restaurer-sauvegarde.sh` | Restauration d'une sauvegarde et contrôle (ticket #15), **hors du serveur** | (ordinateur du porteur) |
 | `systemd/diguee.service` | Le service, durci | `/etc/systemd/system/` |
 | `systemd/diguee-migrer.service` | Migrations avec le rôle propriétaire | `/etc/systemd/system/` |
 | `systemd/diguee-volume.service` | Déverrouillage du volume au démarrage | `/etc/systemd/system/` |
+| `systemd/diguee-sauvegarde.service`, `.timer` | Sauvegarde chiffrée chaque nuit (ticket #15) | `/etc/systemd/system/` |
+| `systemd/diguee-alerte@.service` | Alerte au journal quand une unité échoue (`OnFailure=`) | `/etc/systemd/system/` |
 | `systemd/postgresql@16-main.service.d/diguee.conf` | PostgreSQL attend le volume | `/etc/systemd/system/postgresql@16-main.service.d/` |
 | `systeme/*` | SSH, nftables, journald, mises à jour automatiques, logrotate | `/etc/…` |
-| `postgresql/*` | Réglages, `pg_hba.conf`, `pg_ident.conf`, `roles.sql` | `/etc/postgresql/16/main/` |
+| `postgresql/*` | Réglages, `pg_hba.conf`, `pg_ident.conf`, `roles.sql`, `role-sauvegarde.sql` | `/etc/postgresql/16/main/` |
 | `env/*.exemple` | Modèles des fichiers d'environnement (secrets) | `/etc/diguee/*.env`, root 0600 |
 | `essais/` | Essai des scripts dans un conteneur Docker Ubuntu 24.04 | (dépôt) |
 
@@ -45,6 +50,9 @@ Fichiers sur le serveur, jamais dans le dépôt :
 |---|---|---|
 | `/etc/diguee/diguee.env` | Variables `DIGUEE_*` du service (secrets compris) | root 0600 (lu par systemd seulement) |
 | `/etc/diguee/migrations.env` | `DIGUEE_POSTGRES_URL_MIGRATIONS` (rôle propriétaire) | root 0600 |
+| `/etc/diguee/sauvegarde.env` | Clé d'accès S3 du compartiment des sauvegardes (`DIGUEE_SAUVEGARDE_S3_*`) | root 0600 |
+| `/etc/diguee/sauvegarde.age.pub` | Clé **publique** `age` des sauvegardes (la clé privée n'est jamais sur le serveur) | root 0644, remise à l'unité par `LoadCredential` |
+| `/var/lib/diguee-sauvegarde/etat.json` | État de la dernière sauvegarde, lu par l'espace équipe (aucun secret) | `diguee-sauvegarde`, 0644 |
 | `/etc/diguee/volume.env` | Accès au KMS pour la clé du volume | root 0600 |
 | `/etc/diguee/kms-client.pem`, `.key` | Certificat d'accès au KMS de l'empreinte (signature) | root 0600, remis au service par `LoadCredential` |
 | `/etc/diguee/kms-volume.pem`, `.key` | Certificat d'accès au KMS de la clé du volume (déchiffrement seulement) | root 0600 |
@@ -170,6 +178,7 @@ sudo ~/deploiement/preparer-vps.sh postgresql
 | `diguee_proprietaire` | utilisateur système `diguee-migrations` | propriétaire de la base, du schéma et des tables | `diguee migrer` (`diguee-migrer.service`) ; plus tard la Clôture (#16) |
 | `diguee_application` | aucune (groupe) | ceux de `internal/base/droits.go`, accordés par `diguee migrer` | — |
 | `diguee_app` | utilisateur système `diguee` | membre de `diguee_application`, rien d'autre | `diguee.service` |
+| `diguee_sauvegarde` | utilisateur système `diguee-sauvegarde` | membre de `pg_read_all_data` (lecture de toutes les tables), aucune écriture (`role-sauvegarde.sql`) | `diguee-sauvegarde.service` (`pg_dump`) |
 
 Droits de l'application : `SELECT` et `INSERT` sur toutes les tables (en ajout seul), `UPDATE` de quatre colonnes de `membre` (rôles, mot de passe, secret TOTP, actif) ; jamais `UPDATE` ni `DELETE` ailleurs, ni `TRUNCATE`, ni `ALTER TABLE` (donc pas de `DISABLE TRIGGER`, réservé au propriétaire), ni création d'objet. `participation` ne peut être vidée que par le propriétaire (Clôture). `diguee migrer` retire puis réaccorde exactement ces droits après chaque migration, et refuse de finir si une table n'est pas dans la politique. En production, `diguee` (servir) **n'applique pas les migrations** et **refuse de démarrer** si son rôle est superutilisateur, propriétaire (même par appartenance) du schéma ou d'une table, peut créer dans le schéma, ou a un droit de trop ; il refuse aussi un schéma en retard sur l'exécutable.
 
@@ -232,11 +241,98 @@ Essayé :
 - `go test ./...` : TLS (`internal/https` : redirection, HSTS, liste blanche, configuration ; **obtention réelle d'un certificat** auprès de Pebble, le serveur ACME de test de Let's Encrypt, par TLS-ALPN-01 et par HTTP-01, puis relecture du cache), mode ACME de l'exécutable (`cmd/diguee`), rôles PostgreSQL (`internal/base/droits_test.go`, et le parcours T1 du paquet `web` et l'espace équipe avec le rôle de l'application), 200 envois sur l'exécutable lancé avec le rôle de l'application puis contrôle T3 de son journal par `controle-journaux.sh`, clé du volume contre un faux KMS (mTLS, JWE, contexte, texte altéré, KMS indisponible).
 - Pebble localement : `go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.8.0 github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.8.0`, puis `DIGUEE_TEST_PEBBLE=$(go env GOPATH)/bin DIGUEE_TEST_PEBBLE_DOSSIER=$(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@v2.8.0 go test ./internal/https -run Pebble -v` (la CI le fait).
 - `shellcheck` sur tous les scripts (CI).
-- `essais/conteneur.sh` (Docker, Ubuntu 24.04, sans systemd) : `preparer-vps.sh systeme` complet (paquets, utilisateurs, `sshd -T`, nftables chargé, journald, rsyslog retiré), `systemd-analyze verify` des unités, `diguee-installer` (SHA-256 juste et altéré), `volume.sh creer` jusqu'au formatage LUKS2 et à la phrase de secours (le bac à sable n'avait pas de device-mapper : ouverture et montage remplacés par un tmpfs), `preparer-vps.sh postgresql` (cluster sur le volume, aucun port TCP), **vrai `diguee migrer` en production** avec le rôle propriétaire par « peer », puis droits du rôle de l'application vérifiés en SQL.
+- `essais/conteneur.sh` (Docker, Ubuntu 24.04, sans systemd) : `preparer-vps.sh systeme` complet (paquets, utilisateurs, `sshd -T`, nftables chargé, journald, rsyslog retiré), `systemd-analyze verify` des unités, `diguee-installer` (SHA-256 juste et altéré), `volume.sh creer` jusqu'au formatage LUKS2 et à la phrase de secours (le bac à sable n'avait pas de device-mapper : ouverture et montage remplacés par un tmpfs), `preparer-vps.sh postgresql` (cluster sur le volume, aucun port TCP), **vrai `diguee migrer` en production** avec le rôle propriétaire par « peer », puis droits du rôle de l'application vérifiés en SQL ; **sauvegarde (ticket #15)** : `age` installé, rôle `diguee_sauvegarde` par « peer » (lecture de tout, écriture refusée, inaccessible aux autres utilisateurs), vrai `diguee sauvegarde faire` (pg_dump | age, objet chiffré, état 0644 lisible par `diguee`), échec signalé (code 1 et état), puis restauration par `restaurer-sauvegarde.sh` (déchiffrement, `pg_restore`, lignes et journal contrôlés) et « restauration réelle » dans une base `diguee` recréée (propriétaires d'origine gardés, `diguee migrer` réaccorde les droits, données lues par le rôle de l'application) ; `systemd-analyze verify` des nouvelles unités et du minuteur.
 
-Pas essayé (à faire par le porteur, dans l'ordre de la section « Mise en production pas à pas ») : un vrai VPS et systemd (ordre de démarrage, `LoadCredential`, durcissement de l'unité en marche : `systemd-analyze security diguee`), le pare-feu réseau d'OVHcloud, le vrai KMS (encrypt/decrypt, noms des actions IAM), `cryptsetup open` et le montage au démarrage, Let's Encrypt en vrai, le DNS, le redémarrage automatique des mises à jour.
+- Sauvegardes (ticket #15) : `go test ./internal/sauvegarde ./internal/stockage ./cmd/diguee` (faux S3 qui vérifie la signature SigV4, paire de clés `age` tirée pour le test) ; `restaurer-sauvegarde.sh --docker` essayé à la main (conteneur `postgres:16` en mémoire, supprimé à la fin).
 
-## 10. Pour les tickets suivants
+Pas essayé (à faire par le porteur, dans l'ordre de la section « Mise en production pas à pas ») : un vrai VPS et systemd (ordre de démarrage, `LoadCredential`, durcissement de l'unité en marche : `systemd-analyze security diguee`), le pare-feu réseau d'OVHcloud, le vrai KMS (encrypt/decrypt, noms des actions IAM), `cryptsetup open` et le montage au démarrage, Let's Encrypt en vrai, le DNS, le redémarrage automatique des mises à jour ; pour les sauvegardes : le vrai Object Storage (`ListObjectsV2`, `DeleteObject`, `GetBucketVersioning`, politiques des deux utilisateurs S3), le minuteur et `OnFailure=` sous un vrai systemd.
 
-- **#15 (sauvegardes)** : `pg_dump` se lance par le socket Unix ; prévoir un utilisateur système et un rôle dédiés (par exemple `diguee-sauvegarde` → `diguee_sauvegarde`, membre de `pg_read_all_data`, ligne à ajouter dans `pg_hba.conf` et `pg_ident.conf`), une unité `diguee-sauvegarde.service` et son minuteur sur le modèle de `diguee-migrer.service` (`After=`/`Requires=` du volume et de PostgreSQL), la clé publique `age` dans `/etc/diguee`, et l'envoi vers Object Storage. À sauvegarder aussi hors ligne, une fois : l'en-tête LUKS et la phrase de secours (§4). Le volume chiffré ne remplace pas une sauvegarde chiffrée : les sauvegardes quittent le VPS chiffrées par `age`.
-- **#16 (clôture)** : la suppression de `participation` (puis la destruction de la clé de l'empreinte dans le KMS) demande le rôle propriétaire : une commande `diguee cloturer` lancée par une unité `diguee-cloturer.service` sous l'utilisateur `diguee-migrations`, avec `DIGUEE_POSTGRES_URL_MIGRATIONS` (`migrations.env`), comme `diguee-migrer.service`. Le rôle de l'application ne peut ni supprimer ni vider aucune table. Penser aussi à effacer les copies de `participation` hors de la base (sauvegardes du ticket #15 et instantanés du VPS éventuels).
+## 10. Sauvegardes (ticket #15)
+
+Spec §11 et §12, ADR 0002 et 0006. Chaque nuit à 02:30 UTC, `diguee-sauvegarde.timer` lance `diguee-sauvegarde.service` : `diguee sauvegarde faire`, sous l'utilisateur système `diguee-sauvegarde` (rôle `diguee_sauvegarde`, lecture seule).
+
+### Principe et choix
+
+- **Chiffrement en flux, avant de quitter le serveur** : `pg_dump --format=custom` écrit dans un tube lu par `age --encrypt --recipient age1…` (clé publique X25519 du porteur). Le dump en clair n'existe que dans ce tube, jamais sur un disque ; seul le texte chiffré est écrit, dans le `/tmp` privé de l'unité, le temps d'en calculer le SHA-256 (signé avec l'envoi), puis effacé. La commande vérifie l'en-tête `age-encryption.org/v1` / `X25519` avant d'envoyer.
+- **`age` en programme, pas en bibliothèque Go** : c'est l'implémentation de référence, du paquet `age` d'Ubuntu 24.04 (mis à jour par les mises à jour de sécurité automatiques), la même que celle du porteur (`age-keygen`, déchiffrement) ; aucune dépendance Go ajoutée (`CLAUDE.md`), aucune cryptographie écrite dans le dépôt. Seules les clés X25519 sont acceptées (ni greffon, ni clé SSH). Le chiffrement `age` est authentifié : une sauvegarde altérée ne se déchiffre pas.
+- **Compartiment dédié** `diguee-sauvegardes`, distinct de `diguee-archives` : les archives doivent être en *Object Lock* et ne jamais être supprimées (ADR 0008), les sauvegardes doivent l'être au bout de 30 jours et toutes à la Clôture (ADR 0002). Un préfixe dans le même compartiment rendrait ces deux règles incompatibles, et partagerait la clé d'accès du serveur. **Ni versionnage, ni Object Lock** sur ce compartiment : un objet supprimé y resterait lisible dans ses versions (`supprimer-toutes` le vérifie et échoue si le versionnage est activé ou suspendu).
+- **Deux utilisateurs S3** : sur le serveur, `diguee-sauvegarde-ecriture` : déposer, lister, supprimer, lire l'état du versionnage, **pas lire** les objets (inutile : il ne peut pas les déchiffrer, et un intrus n'en ferait rien de plus). Chez le porteur, hors du serveur : `diguee-sauvegarde-lecture` (lire, lister), pour la restauration. (Une clé en écriture seule est impossible : la commande supprime elle-même les sauvegardes de plus de 30 jours.)
+- **Nommage** : `sauvegardes/diguee-AAAA-MM-JJTHHMMSSZ.pgdump.age` (UTC). **Conservation** : après chaque envoi réussi (relu dans la liste, à la bonne taille), la commande supprime (`DeleteObject`) les sauvegardes datées d'avant minuit UTC il y a 30 jours : il en reste 31 au plus, la plus ancienne a 30 jours. Le délai n'est pas réglable (Clôture). La suppression se fait par la commande et non par une règle de cycle de vie du compartiment : elle est testée et ne dépend pas de ce que propose OVHcloud ; une règle d'expiration à 32 jours peut s'ajouter en filet si OVHcloud la propose (**à vérifier**), sans rien changer d'autre. Les autres objets rangés sous `sauvegardes/` ne sont pas touchés par la purge des 30 jours (mais le sont par `supprimer-toutes`).
+- **Alerte** : en cas d'échec (pg_dump, age, envoi, contrôle, purge, configuration), la commande sort en erreur ; `OnFailure=diguee-alerte@%n.service` écrit au journal une ligne de priorité *alert* (`journalctl -t diguee-alerte`, `journalctl -p alert`). Surtout, l'état (`/var/lib/diguee-sauvegarde/etat.json`, sans secret) est lu par le serveur : l'**accueil de l'espace équipe** montre aux administrateurs la dernière sauvegarde réussie, et une alerte si la dernière a échoué, si aucune n'a réussi depuis 27 heures (minuteur arrêté, commande tuée) ou si l'état est absent ou illisible.
+
+### Dans l'espace client OVHcloud
+
+1. *Public Cloud* → *Object Storage* → créer un conteneur **S3**, classe *Standard*, région **en France** (la même que `diguee-archives`), nom `diguee-sauvegardes`, **privé**, **sans versionnage ni verrouillage des objets**.
+2. Créer l'utilisateur S3 `diguee-sauvegarde-ecriture`, et lui donner une politique limitée à ce conteneur (import d'une politique JSON ; noms des actions **à vérifier** dans l'espace client) :
+   ```json
+   {"Statement": [
+     {"Sid": "Objets", "Effect": "Allow", "Action": ["s3:PutObject", "s3:DeleteObject"],
+      "Resource": ["arn:aws:s3:::diguee-sauvegardes/sauvegardes/*"]},
+     {"Sid": "Compartiment", "Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketVersioning"],
+      "Resource": ["arn:aws:s3:::diguee-sauvegardes"]}]}
+   ```
+   Noter sa clé d'accès et sa clé secrète → `/etc/diguee/sauvegarde.env`.
+3. Créer l'utilisateur `diguee-sauvegarde-lecture` (actions `s3:GetObject` et `s3:ListBucket` sur ce conteneur) ; ses clés restent **chez le porteur** (gestionnaire de mots de passe), jamais sur le serveur.
+
+### Sur le poste du porteur : la paire de clés `age`
+
+```sh
+age-keygen -o diguee-sauvegardes.age.txt   # clé privée : ne la donnez à personne, ne la copiez jamais sur le serveur
+age-keygen -y diguee-sauvegardes.age.txt   # clé publique : age1… (une ligne), seule à aller sur le serveur
+```
+
+Garder la clé privée **hors ligne** : gestionnaire de mots de passe et copie de secours (papier sous scellé, clé USB chiffrée). Sans elle, aucune sauvegarde ne peut être relue ; si elle fuit, changer de paire (nouvelle clé publique sur le serveur) : les sauvegardes déjà faites restent lisibles avec l'ancienne jusqu'à leur suppression, 30 jours plus tard.
+
+### Sur le serveur
+
+```sh
+# Clé publique (une ligne age1…), et clé d'accès S3 d'écriture
+echo 'age1…' | sudo tee /etc/diguee/sauvegarde.age.pub && sudo chmod 644 /etc/diguee/sauvegarde.age.pub
+sudo nano /etc/diguee/sauvegarde.env            # DIGUEE_SAUVEGARDE_S3_CLE_ACCES et _CLE_SECRETE (root 0600)
+# Première sauvegarde, à la main, puis le minuteur
+sudo systemctl start diguee-sauvegarde.service && journalctl -u diguee-sauvegarde -n 20 -o cat
+systemctl list-timers diguee-sauvegarde.timer   # prochaine exécution (activé par preparer-vps.sh postgresql)
+# Lister les sauvegardes (avec la clé du serveur)
+sudo systemd-run --quiet --pty --wait --collect -p User=diguee-sauvegarde -p EnvironmentFile=/etc/diguee/sauvegarde.env \
+  -E DIGUEE_ENV=production /opt/diguee/diguee sauvegarde lister
+```
+
+L'unité : `After=`/`Requires=` du volume et de PostgreSQL, base `postgres://diguee_sauvegarde@/diguee?host=/var/run/postgresql` (« peer »), `/usr/lib/postgresql/16/bin/pg_dump`, `/usr/bin/age`, clé publique remise par `LoadCredential`, `PrivateTmp`, `ProtectSystem=strict`, réseau limité à IP et socket Unix, `Nice=10`, entrées-sorties au repos. L'utilisateur `diguee-sauvegarde` ne lit ni `diguee.env` ni les certificats du KMS, et ne peut rien écrire dans la base.
+
+### Restauration (test mensuel, sur une machine jetable)
+
+Le test se fait **chaque mois** (spec §11, ADR 0006), par le porteur (seul à avoir la clé privée), sur **son ordinateur avec Docker** : la base restaurée vit dans un conteneur `postgres:16` dont les données sont en mémoire (`tmpfs`), supprimé à la fin. La clé privée ne quitte pas l'ordinateur.
+
+```sh
+# Dans le dépôt, à jour : make build (ou --diguee CHEMIN)
+export DIGUEE_SAUVEGARDE_STOCKAGE=ovh DIGUEE_SAUVEGARDE_S3_POINT_ACCES=https://s3.gra.io.cloud.ovh.net \
+  DIGUEE_SAUVEGARDE_S3_REGION=gra DIGUEE_SAUVEGARDE_S3_COMPARTIMENT=diguee-sauvegardes \
+  DIGUEE_SAUVEGARDE_S3_CLE_ACCES=<clé de LECTURE> DIGUEE_SAUVEGARDE_S3_CLE_SECRETE=<secret de lecture>
+deploiement/restaurer-sauvegarde.sh --identite ~/chemin/diguee-sauvegardes.age.txt --docker \
+  --comparer-avec https://consultation.diguee.sn/journal.json
+```
+
+Le script : récupère la sauvegarde la plus récente (`diguee sauvegarde recuperer`, ou `--fichier` pour une sauvegarde téléchargée à la main depuis l'espace client) ; démarre la base jetable ; déchiffre avec `age --decrypt` **directement dans** `pg_restore --no-owner --no-acl --exit-on-error --single-transaction` ; compte les lignes de chaque table et vérifie la chaîne du journal public (`diguee sauvegarde controler`, qui en écrit l'export), revérifie l'export avec `diguee verifier-journal`, puis vérifie que le journal restauré est **le début exact** du journal publié en ligne (`-precedent`). Il affiche `RESTAURATION RÉUSSIE` ou `RESTAURATION EN ÉCHEC : …`. Sans Docker : `--base postgres://…` vers une base vide (`pg_restore` et `psql` 16 sur la machine).
+
+Résultat attendu : la sauvegarde date de la nuit, les nombres de lignes sont plausibles (participations, réponses, entrées du journal), le journal est valide et identique au début du journal en ligne. Noter la date du test et le résultat (par exemple dans le gestionnaire de tâches de l'équipe). En cas d'échec : refaire avec la sauvegarde précédente (`diguee sauvegarde lister`, puis `recuperer -cle …` et `--fichier`), et prévenir l'administrateur.
+
+### Restauration réelle (perte du serveur)
+
+Essayée dans le conteneur du ticket #7 (`essais/`, sans SSH ni vrai VPS) ; le test mensuel, lui, restaure dans une base jetable, sans les rôles d'origine. Nouveau VPS préparé jusqu'à `preparer-vps.sh postgresql` (D §2 à §5 : les rôles existent, la base `diguee` est vide), service arrêté. La sauvegarde est déchiffrée **sur le poste du porteur** et le flux en clair passe par SSH jusqu'à `pg_restore`, qui écrit sur le volume chiffré :
+
+```sh
+age --decrypt --identity diguee-sauvegardes.age.txt diguee-AAAA-MM-JJT….pgdump.age |
+  ssh ubuntu@<IPv4> 'sudo -u postgres pg_restore --dbname=diguee --exit-on-error --single-transaction'
+ssh ubuntu@<IPv4> 'sudo systemctl start diguee-migrer && sudo systemctl start diguee'   # droits réaccordés, schéma à jour
+```
+
+Les propriétaires d'origine (`diguee_proprietaire`) sont gardés ; `diguee-migrer` réaccorde les droits exacts du rôle de l'application. Les réponses reçues depuis la dernière sauvegarde sont perdues (au plus un jour) ; le tampon en mémoire aussi.
+
+### Clôture (#16)
+
+Toutes les sauvegardes contiennent la table `participation`, donc les empreintes (ADR 0002) : à l'étape 4 de la Clôture, après la suppression de la table, `diguee sauvegarde supprimer-toutes -confirmer` (avec la clé d'écriture du serveur) supprime tout ce qui est sous `sauvegardes/`, vérifie que la liste est vide et que le compartiment n'est pas versionné (sinon : erreur, versions à supprimer à la main) ; puis `systemctl start diguee-sauvegarde` fait une nouvelle sauvegarde sans la table. Depuis Go : `sauvegarde.SupprimerToutes(ctx, compartiment)`. Les copies que la procédure ne voit pas restent à traiter à part : sauvegardes téléchargées pour un test de restauration (à effacer après chaque test), instantanés du VPS.
+
+## 11. Pour les tickets suivants
+
+- **#15 (sauvegardes)** : fait, voir §10. À sauvegarder aussi hors ligne, une fois : l'en-tête LUKS et la phrase de secours (§4). Le volume chiffré ne remplace pas une sauvegarde chiffrée : les sauvegardes quittent le VPS chiffrées par `age`.
+- **#16 (clôture)** : la suppression de `participation` (puis la destruction de la clé de l'empreinte dans le KMS) demande le rôle propriétaire : une commande `diguee cloturer` lancée par une unité `diguee-cloturer.service` sous l'utilisateur `diguee-migrations`, avec `DIGUEE_POSTGRES_URL_MIGRATIONS` (`migrations.env`), comme `diguee-migrer.service`. Le rôle de l'application ne peut ni supprimer ni vider aucune table. Les sauvegardes du ticket #15 contiennent `participation` : appeler `sauvegarde.SupprimerToutes` (ou `diguee sauvegarde supprimer-toutes -confirmer`, sous l'utilisateur `diguee-sauvegarde` avec `/etc/diguee/sauvegarde.env`, §10 « Clôture ») après la suppression de la table, inscrire le nombre d'objets supprimés au procès-verbal, puis lancer une nouvelle sauvegarde ; effacer aussi les instantanés du VPS éventuels.

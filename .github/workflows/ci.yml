@@ -41,6 +41,10 @@ jobs:
         run: go vet ./...
       - name: pg_dump (test T1/T2)
         run: pg_dump --version
+      # Sauvegardes chiffrées (ticket #15) : les tests chiffrent avec age et
+      # restaurent avec pg_restore.
+      - name: age (ticket #15)
+        run: sudo apt-get install -y --no-install-recommends age && age --version && pg_restore --version
       # Les tests créent eux-mêmes les rôles diguee_application et
       # diguee_test_app (ticket #7) : l'utilisateur diguee du service est
       # superutilisateur.

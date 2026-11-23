@@ -17,6 +17,7 @@ import (
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/observatoire"
+	"github.com/2guntan/diguee/internal/sauvegarde"
 )
 
 //go:embed gabarits/*.html
@@ -53,6 +54,20 @@ type OptionsEspace struct {
 	// ServirArchive sert une copie archivée (web.ServirArchive), pour que les
 	// relecteurs relisent les fichiers avant validation.
 	ServirArchive func(w http.ResponseWriter, r *http.Request, introuvable func())
+	// Sauvegardes lit l'état des sauvegardes nocturnes de la base (ticket
+	// #15), affiché aux administrateurs sur l'accueil de l'espace, en
+	// alerte si la dernière a échoué ou date de plus de 27 heures. nil :
+	// rien n'est affiché (développement).
+	Sauvegardes func() (*sauvegarde.Etat, error)
+	// Maintenant donne l'heure (time.Now si nil).
+	Maintenant func() time.Time
+}
+
+// VueSauvegardes est l'état des sauvegardes affiché sur l'accueil.
+type VueSauvegardes struct {
+	Etat      *sauvegarde.Etat // nil : aucune sauvegarde connue
+	Alerte    bool
+	Illisible bool // le fichier d'état n'a pas pu être lu
 }
 
 // TableauAncrage donne l'état des ancrages. Implémenté par ancrage.Ancreur.
@@ -251,6 +266,8 @@ type Donnees struct {
 
 	AvecObservatoire bool    // l'observatoire est servi : lien vers /equipe/observatoire
 	Obs              *VueObs // pages /equipe/observatoire
+
+	Sauvegardes *VueSauvegardes // accueil, administrateurs
 }
 
 func (e *Espace) rendre(w http.ResponseWriter, statut int, page string, d Donnees) {
@@ -336,7 +353,21 @@ func donnees(r *http.Request) Donnees {
 }
 
 func (e *Espace) accueil(w http.ResponseWriter, r *http.Request) {
-	e.rendre(w, http.StatusOK, "accueil", donnees(r))
+	d := donnees(r)
+	if e.opt.Sauvegardes != nil && d.Membre.A(Administrateur) {
+		maintenant := time.Now
+		if e.opt.Maintenant != nil {
+			maintenant = e.opt.Maintenant
+		}
+		etat, err := e.opt.Sauvegardes()
+		v := &VueSauvegardes{Etat: etat, Alerte: etat.EnAlerte(maintenant())}
+		if err != nil {
+			e.opt.Journal.Error("équipe : état des sauvegardes illisible", "erreur", err)
+			v.Illisible, v.Alerte = true, true
+		}
+		d.Sauvegardes = v
+	}
+	e.rendre(w, http.StatusOK, "accueil", d)
 }
 
 func (e *Espace) pageMembres(w http.ResponseWriter, r *http.Request, statut int, d Donnees) {

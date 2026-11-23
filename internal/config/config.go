@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -149,6 +151,11 @@ type Config struct {
 
 	// Ancrage extérieur du journal public (§10, ticket #12).
 	Ancrage Ancrage
+
+	// SauvegardeEtat est le fichier d'état écrit par « diguee sauvegarde
+	// faire » (ticket #15), lu pour l'afficher aux administrateurs dans
+	// l'espace équipe. Vide : rien n'est affiché (défaut en développement).
+	SauvegardeEtat string // DIGUEE_SAUVEGARDE_ETAT : /var/lib/diguee-sauvegarde/etat.json en production
 }
 
 // TLS règle le service en HTTPS (spec §11, ADR 0007, ticket #7).
@@ -413,6 +420,12 @@ func Charger(getenv func(string) string) (*Config, error) {
 		l.erreur("DIGUEE_ANCRAGE_DECALAGE", errors.New("doit être inférieur à 24h"))
 	}
 	c.Ancrage.Delai = l.duree("DIGUEE_ANCRAGE_DELAI", "60s")
+
+	etatSauvegarde := ""
+	if c.Env == Production {
+		etatSauvegarde = EtatSauvegardeParDefaut
+	}
+	c.SauvegardeEtat = l.chaine("DIGUEE_SAUVEGARDE_ETAT", etatSauvegarde)
 
 	if len(l.erreurs) > 0 {
 		return nil, errors.Join(l.erreurs...)
@@ -698,4 +711,88 @@ func ChargerVolume(getenv func(string) string) (*Volume, error) {
 		return nil, errors.Join(l.erreurs...)
 	}
 	return v, nil
+}
+
+// EtatSauvegardeParDefaut est le fichier d'état des sauvegardes en
+// production (StateDirectory= de diguee-sauvegarde.service).
+const EtatSauvegardeParDefaut = "/var/lib/diguee-sauvegarde/etat.json"
+
+// Sauvegarde règle « diguee sauvegarde » (ticket #15, spec §11). Ces
+// variables sont lues seules, sans le reste de la configuration : la
+// commande tourne sous son propre utilisateur, avec son propre fichier
+// d'environnement (/etc/diguee/sauvegarde.env), sans les secrets du serveur.
+type Sauvegarde struct {
+	Env Env // DIGUEE_ENV
+
+	// Stockage : fake (un dossier local, refusé en production) ou ovh (un
+	// compartiment Object Storage dédié aux sauvegardes, distinct de celui
+	// des archives, avec sa propre clé d'accès).
+	Stockage     string        // DIGUEE_SAUVEGARDE_STOCKAGE : fake (défaut) ou ovh
+	Dossier      string        // DIGUEE_SAUVEGARDE_DOSSIER : <dossier temporaire>/diguee-sauvegardes
+	PointAcces   string        // DIGUEE_SAUVEGARDE_S3_POINT_ACCES
+	Region       string        // DIGUEE_SAUVEGARDE_S3_REGION
+	Compartiment string        // DIGUEE_SAUVEGARDE_S3_COMPARTIMENT : diguee-sauvegardes
+	CleAcces     string        // DIGUEE_SAUVEGARDE_S3_CLE_ACCES
+	CleSecrete   string        // DIGUEE_SAUVEGARDE_S3_CLE_SECRETE : secret
+	Delai        time.Duration // DIGUEE_SAUVEGARDE_S3_DELAI : 1h, durée maximale d'un appel (envoi compris)
+
+	// Pour « faire » seulement.
+	PostgresURL  string // DIGUEE_SAUVEGARDE_POSTGRES_URL : base à sauvegarder (pg_dump)
+	ClePublique  string // DIGUEE_SAUVEGARDE_CLE_PUBLIQUE : fichier de la clé publique age (X25519)
+	PgDump       string // DIGUEE_SAUVEGARDE_PG_DUMP : pg_dump
+	Age          string // DIGUEE_SAUVEGARDE_AGE : age
+	Etat         string // DIGUEE_SAUVEGARDE_ETAT : fichier d'état lu par l'espace équipe (facultatif)
+	DossierTemps string // DIGUEE_SAUVEGARDE_TEMPORAIRE : dossier du fichier chiffré avant envoi (dossier temporaire)
+}
+
+// ChargerSauvegarde lit les variables de « diguee sauvegarde ». Avec faire,
+// la base, la clé publique et les programmes sont exigés.
+func ChargerSauvegarde(getenv func(string) string, faire bool) (*Sauvegarde, error) {
+	l := lecteur{getenv: getenv}
+	s := &Sauvegarde{}
+	switch env := l.chaine("DIGUEE_ENV", string(Developpement)); Env(env) {
+	case Developpement, Production:
+		s.Env = Env(env)
+	default:
+		l.erreur("DIGUEE_ENV", fmt.Errorf("vaut %q ; attendu development ou production", env))
+	}
+	s.Stockage = l.choix("DIGUEE_SAUVEGARDE_STOCKAGE", "fake", "fake", "ovh")
+	switch s.Stockage {
+	case "fake":
+		if s.Env == Production {
+			l.erreur("DIGUEE_SAUVEGARDE_STOCKAGE", errors.New("vaut fake : refusé en production (un dossier local n'est pas une sauvegarde)"))
+		}
+		s.Dossier = l.chaine("DIGUEE_SAUVEGARDE_DOSSIER", filepath.Join(os.TempDir(), "diguee-sauvegardes"))
+	case "ovh":
+		s.PointAcces = l.adresseHTTPS("DIGUEE_SAUVEGARDE_S3_POINT_ACCES", "")
+		s.Region = l.motif("DIGUEE_SAUVEGARDE_S3_REGION", motifRegionS3, "une région en minuscules comme gra")
+		s.Compartiment = l.motif("DIGUEE_SAUVEGARDE_S3_COMPARTIMENT", motifCompartiment, "un nom de bucket S3 (3 à 63 caractères parmi a-z, 0-9, « . » et « - »)")
+		s.CleAcces = l.secret("DIGUEE_SAUVEGARDE_S3_CLE_ACCES", 8)
+		s.CleSecrete = l.secret("DIGUEE_SAUVEGARDE_S3_CLE_SECRETE", 16)
+		s.Delai = l.duree("DIGUEE_SAUVEGARDE_S3_DELAI", "1h")
+	}
+	for nom, v := range map[string]string{"DIGUEE_SAUVEGARDE_S3_COMPARTIMENT": s.Compartiment,
+		"DIGUEE_SAUVEGARDE_S3_CLE_ACCES": s.CleAcces, "DIGUEE_SAUVEGARDE_S3_CLE_SECRETE": s.CleSecrete} {
+		if v == ACompleter {
+			l.erreur(nom, errors.New("vaut « "+ACompleter+" »"))
+		}
+	}
+	s.Etat = l.chaine("DIGUEE_SAUVEGARDE_ETAT", "")
+	if faire {
+		s.PostgresURL = l.chaine("DIGUEE_SAUVEGARDE_POSTGRES_URL", "")
+		if s.PostgresURL == "" {
+			l.erreur("DIGUEE_SAUVEGARDE_POSTGRES_URL", errors.New("est obligatoire"))
+		}
+		s.ClePublique = l.chaine("DIGUEE_SAUVEGARDE_CLE_PUBLIQUE", "")
+		if s.ClePublique == "" {
+			l.erreur("DIGUEE_SAUVEGARDE_CLE_PUBLIQUE", errors.New("est obligatoire (fichier de la clé publique age)"))
+		}
+		s.PgDump = l.chaine("DIGUEE_SAUVEGARDE_PG_DUMP", "pg_dump")
+		s.Age = l.chaine("DIGUEE_SAUVEGARDE_AGE", "age")
+		s.DossierTemps = l.chaine("DIGUEE_SAUVEGARDE_TEMPORAIRE", "")
+	}
+	if len(l.erreurs) > 0 {
+		return nil, errors.Join(l.erreurs...)
+	}
+	return s, nil
 }

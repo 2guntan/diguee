@@ -1,0 +1,21 @@
+# Alerte d'échec d'une unité de Diguee (OnFailure=diguee-alerte@%n.service) :
+# une ligne de priorité « alert » au journal, que l'administrateur retrouve
+# par « journalctl -p alert » ou « journalctl -t diguee-alerte ». Pour la
+# sauvegarde, l'échec est aussi affiché aux administrateurs dans l'espace
+# équipe (fichier d'état).
+[Unit]
+Description=Diguee : alerte, échec de %i
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+ExecStart=/bin/echo "ALERTE Diguee : %i a échoué. Détail : journalctl -u %i -n 50"
+SyslogIdentifier=diguee-alerte
+SyslogLevel=alert
+SyslogLevelPrefix=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+CapabilityBoundingSet=

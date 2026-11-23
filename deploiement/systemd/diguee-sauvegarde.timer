@@ -1,0 +1,14 @@
+# Chaque nuit à 02:30 UTC (avant le redémarrage éventuel des mises à jour à
+# 04:30 et la publication de 06:00). Persistent= : une nuit manquée (machine
+# arrêtée) est rattrapée au démarrage.
+[Unit]
+Description=Diguee : sauvegarde chiffrée de la base, chaque nuit
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

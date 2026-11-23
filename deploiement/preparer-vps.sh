@@ -3,15 +3,15 @@
 # (Ubuntu 24.04 LTS), depuis une copie du dossier deploiement/ :
 #
 #   sudo ./preparer-vps.sh systeme --admin ubuntu --ssh-depuis "203.0.113.10/32,2001:db8::/64"
-#       paquets, mises à jour automatiques, utilisateurs diguee et
-#       diguee-migrations (sans shell), SSH par clé seulement, pare-feu
-#       nftables, journald 14 jours (rsyslog retiré), unités systemd et
-#       scripts de Diguee ;
+#       paquets, mises à jour automatiques, utilisateurs diguee,
+#       diguee-migrations et diguee-sauvegarde (sans shell), SSH par clé
+#       seulement, pare-feu nftables, journald 14 jours (rsyslog retiré),
+#       unités systemd et scripts de Diguee ;
 #   (puis, depuis le poste : deployer.sh --sans-demarrer, et sur le VPS :
 #    volume.sh creer — voir deploiement/README.md)
 #   sudo ./preparer-vps.sh postgresql
 #       cluster PostgreSQL 16 sur le volume chiffré, sans port TCP, rôles et
-#       base, fichiers d'environnement.
+#       base, fichiers d'environnement, minuteur des sauvegardes (#15).
 #
 # Chaque étape vérifie avant d'agir et peut être relancée. DIGUEE_A_BLANC=1
 # affiche les commandes sans rien changer ; DIGUEE_SANS_SYSTEMD=1 saute ce
@@ -110,7 +110,7 @@ etape_systeme() {
 	fais apt-get -y -q full-upgrade
 	fais apt-get -y -q install --no-install-recommends \
 		unattended-upgrades nftables cryptsetup postgresql-16 postgresql-client-16 \
-		ca-certificates curl openssh-server logrotate e2fsprogs util-linux grep
+		ca-certificates curl openssh-server logrotate e2fsprogs util-linux grep age
 	# journald est le seul dépôt des journaux (rétention de 14 jours) :
 	# rsyslog garderait /var/log/syslog et auth.log plusieurs semaines.
 	if dpkg -s rsyslog >/dev/null 2>&1; then
@@ -123,7 +123,7 @@ etape_systeme() {
 	sysd enable --now unattended-upgrades.service
 
 	dire "Utilisateurs sans shell"
-	for u in diguee diguee-migrations; do
+	for u in diguee diguee-migrations diguee-sauvegarde; do
 		if ! id "$u" >/dev/null 2>&1; then
 			fais useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$u"
 		fi
@@ -179,7 +179,8 @@ etape_systeme() {
 	poser "$ICI/controle-journaux.sh" /usr/local/sbin/diguee-controle-journaux 0755
 	poser "$ICI/installer-version.sh" /usr/local/sbin/diguee-installer 0755
 	poser "$ICI/commande.sh" /usr/local/sbin/diguee-commande 0755
-	for u in diguee.service diguee-migrer.service diguee-volume.service; do
+	for u in diguee.service diguee-migrer.service diguee-volume.service \
+		diguee-sauvegarde.service diguee-sauvegarde.timer diguee-alerte@.service; do
 		poser "$ICI/systemd/$u" "/etc/systemd/system/$u" 0644
 	done
 	poser "$ICI/systemd/postgresql@16-main.service.d/diguee.conf" /etc/systemd/system/postgresql@16-main.service.d/diguee.conf 0644
@@ -222,6 +223,13 @@ etape_postgresql() {
 	if [ "$existe" != 1 ]; then
 		fais runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -q -f "$ICI/postgresql/roles.sql"
 	fi
+	existe=""
+	if [ "$A_BLANC" != 1 ]; then
+		existe="$(runuser -u postgres -- psql -XAtq -c "SELECT 1 FROM pg_roles WHERE rolname = 'diguee_sauvegarde'")"
+	fi
+	if [ "$existe" != 1 ]; then
+		fais runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -q -f "$ICI/postgresql/role-sauvegarde.sql"
+	fi
 
 	dire "Fichiers d'environnement (root 0600)"
 	if [ ! -e "$ETC/diguee.env" ]; then
@@ -230,7 +238,15 @@ etape_postgresql() {
 	if [ ! -e "$ETC/migrations.env" ]; then
 		ecrire "$ETC/migrations.env" 0600 <"$ICI/env/migrations.env.exemple"
 	fi
-	dire "Fait. Compléter $ETC/diguee.env (valeurs « À COMPLÉTER »), puis deployer.sh."
+	if [ ! -e "$ETC/sauvegarde.env" ]; then
+		ecrire "$ETC/sauvegarde.env" 0600 <"$ICI/env/sauvegarde.env.exemple"
+	fi
+
+	dire "Sauvegardes chaque nuit (ticket #15)"
+	# Activé tout de suite : tant que sauvegarde.env et la clé publique
+	# manquent, chaque nuit échoue et alerte (journal, espace équipe).
+	sysd enable --now diguee-sauvegarde.timer
+	dire "Fait. Compléter $ETC/diguee.env et $ETC/sauvegarde.env (valeurs « À COMPLÉTER »), copier la clé publique age dans $ETC/sauvegarde.age.pub, puis deployer.sh."
 }
 
 commande="${1:-}"
@@ -239,7 +255,7 @@ case "$commande" in
 systeme) etape_systeme "$@" ;;
 postgresql) etape_postgresql "$@" ;;
 *)
-	sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 	;;
 esac

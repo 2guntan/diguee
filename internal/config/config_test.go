@@ -283,3 +283,56 @@ func TestTLS(t *testing.T) {
 		}
 	}
 }
+
+func TestChargerSauvegarde(t *testing.T) {
+	lire := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	// Développement : dossier local par défaut ; faire exige la base et la clé.
+	s, err := ChargerSauvegarde(lire(nil), false)
+	if err != nil || s.Stockage != "fake" || s.Dossier == "" {
+		t.Fatalf("%+v %v", s, err)
+	}
+	if _, err := ChargerSauvegarde(lire(nil), true); err == nil ||
+		!strings.Contains(err.Error(), "DIGUEE_SAUVEGARDE_POSTGRES_URL est obligatoire") ||
+		!strings.Contains(err.Error(), "DIGUEE_SAUVEGARDE_CLE_PUBLIQUE est obligatoire") {
+		t.Errorf("faire : %v", err)
+	}
+	// Production : le dossier local est refusé.
+	if _, err := ChargerSauvegarde(lire(map[string]string{"DIGUEE_ENV": "production"}), false); err == nil ||
+		!strings.Contains(err.Error(), "refusé en production") {
+		t.Errorf("production : %v", err)
+	}
+	complet := map[string]string{
+		"DIGUEE_ENV": "production", "DIGUEE_SAUVEGARDE_STOCKAGE": "ovh",
+		"DIGUEE_SAUVEGARDE_S3_POINT_ACCES": "https://s3.gra.io.cloud.ovh.net", "DIGUEE_SAUVEGARDE_S3_REGION": "gra",
+		"DIGUEE_SAUVEGARDE_S3_COMPARTIMENT": "diguee-sauvegardes", "DIGUEE_SAUVEGARDE_S3_CLE_ACCES": "0123456789abcdef",
+		"DIGUEE_SAUVEGARDE_S3_CLE_SECRETE": "0123456789abcdef0123456789abcdef",
+		"DIGUEE_SAUVEGARDE_POSTGRES_URL":   "postgres://diguee_sauvegarde@/diguee?host=/var/run/postgresql",
+		"DIGUEE_SAUVEGARDE_CLE_PUBLIQUE":   "/run/credentials/x/sauvegarde.age.pub",
+	}
+	s, err = ChargerSauvegarde(lire(complet), true)
+	if err != nil || s.Compartiment != "diguee-sauvegardes" || s.Delai != time.Hour || s.PgDump != "pg_dump" || s.Age != "age" {
+		t.Errorf("%+v %v", s, err)
+	}
+	complet["DIGUEE_SAUVEGARDE_S3_CLE_ACCES"] = ACompleter
+	if _, err := ChargerSauvegarde(lire(complet), true); err == nil || !strings.Contains(err.Error(), "DIGUEE_SAUVEGARDE_S3_CLE_ACCES vaut « À COMPLÉTER »") {
+		t.Errorf("à compléter : %v", err)
+	}
+	complet["DIGUEE_SAUVEGARDE_S3_CLE_ACCES"] = "0123456789abcdef"
+	complet["DIGUEE_SAUVEGARDE_S3_CLE_SECRETE"] = "xyzw"
+	if _, err := ChargerSauvegarde(lire(complet), true); err == nil || strings.Contains(err.Error(), "xyzw") {
+		t.Errorf("secret trop court : %v", err)
+	}
+}
+
+func TestEtatSauvegardeParDefaut(t *testing.T) {
+	c, err := Charger(func(k string) string { return map[string]string{"DIGUEE_POSTGRES_URL": "postgres://x"}[k] })
+	if err != nil || c.SauvegardeEtat != "" {
+		t.Errorf("développement : %q %v", c.SauvegardeEtat, err)
+	}
+	c, err = Charger(func(k string) string {
+		return map[string]string{"DIGUEE_POSTGRES_URL": "postgres://x", "DIGUEE_ENV": "production"}[k]
+	})
+	if err != nil || c.SauvegardeEtat != EtatSauvegardeParDefaut {
+		t.Errorf("production : %q %v", c.SauvegardeEtat, err)
+	}
+}

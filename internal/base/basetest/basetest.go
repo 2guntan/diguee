@@ -190,3 +190,44 @@ func creerRoles(t testing.TB) {
 		}
 	}
 }
+
+// NouvelleBase crée une base de données vide (et non un schéma), supprimée
+// à la fin du test, et renvoie son URL : pour pg_dump et pg_restore, qui
+// travaillent sur une base entière (ticket #15). Le rôle de
+// DIGUEE_TEST_POSTGRES_URL doit pouvoir créer des bases.
+func NouvelleBase(t testing.TB) string {
+	t.Helper()
+	adresse := os.Getenv(Variable)
+	if adresse == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("%s est obligatoire en intégration continue", Variable)
+		}
+		t.Skipf("%s absente : test sauté", Variable)
+	}
+	ctx := context.Background()
+	aleas := make([]byte, 8)
+	_, _ = rand.Read(aleas)
+	nom := "test_base_" + hex.EncodeToString(aleas)
+	admin, err := pgx.Connect(ctx, adresse)
+	if err != nil {
+		t.Fatalf("connexion à %s : %v", Variable, err)
+	}
+	defer admin.Close(ctx)
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+nom+" TEMPLATE template0 ENCODING 'UTF8'"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c, err := pgx.Connect(context.Background(), adresse)
+		if err != nil {
+			return
+		}
+		defer c.Close(context.Background())
+		_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+nom+" WITH (FORCE)")
+	})
+	u, err := url.Parse(adresse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + nom
+	return u.String()
+}
