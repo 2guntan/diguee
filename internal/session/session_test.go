@@ -3,6 +3,7 @@ package session
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -79,5 +80,19 @@ func TestPurgeALaCreation(t *testing.T) {
 	_ = m.Creer(httptest.NewRecorder(), empreinte.Empreinte{})
 	if m.Nombre() != 1 {
 		t.Errorf("%d sessions, 1 attendue", m.Nombre())
+	}
+}
+
+// La session ne peut contenir que l'empreinte (et l'heure du dernier accès) :
+// aucun champ ne peut garder le numéro une fois l'empreinte calculée (ticket #5).
+func TestEtatSansNumero(t *testing.T) {
+	typ := reflect.TypeOf(Etat{})
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		switch f.Type {
+		case reflect.TypeOf(empreinte.Empreinte{}), reflect.TypeOf(time.Time{}):
+		default:
+			t.Errorf("champ %s de type %s : la session ne doit contenir que l'empreinte", f.Name, f.Type)
+		}
 	}
 }

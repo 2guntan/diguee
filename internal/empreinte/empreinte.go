@@ -1,11 +1,12 @@
 // Package empreinte normalise les numéros mobiles sénégalais et calcule leur
 // empreinte (spec §5.4, ADR 0002).
 //
-// Le calcul passe par l'interface Empreinteur. La vraie implémentation (KMS
-// d'OVHcloud, RS256 puis SHA-256) arrive au ticket #5. En attendant, HMACLocal
-// calcule un HMAC-SHA-256 avec une clé de développement écrite dans le code :
-// elle est déclarée « fake » dans le registre des intégrations, donc refusée
-// en production par le paquet garde.
+// Le calcul passe par l'interface Empreinteur, choisie par DIGUEE_EMPREINTEUR :
+//   - ovh : KMS d'OVHcloud, signature RS256 puis SHA-256 (ADR 0002 et 0006) ;
+//   - gcp : repli sur Google Cloud KMS, HMAC natif puis SHA-256 ;
+//   - fake : HMACLocal, un HMAC-SHA-256 avec une clé de développement écrite
+//     dans le code, déclaré « fake » dans le registre des intégrations, donc
+//     refusé en production par le paquet garde.
 //
 // Règle commune : dès que le numéro est vérifié, on calcule son empreinte et
 // on oublie le numéro. Ce paquet ne journalise jamais rien.
@@ -16,6 +17,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"slices"
@@ -111,34 +113,89 @@ func (h *HMACLocal) Calculer(_ context.Context, numero string) (Empreinte, error
 	return e, nil
 }
 
-// numeroDeControle sert au test de déterminisme ; ce n'est pas un vrai numéro
-// (le préfixe 00 n'est attribué à aucun opérateur).
-const numeroDeControle = "+221000000000"
+// Les numéros de contrôle servent au test de déterminisme ; ce ne sont pas de
+// vrais numéros (le préfixe 00 n'est attribué à aucun opérateur).
+const (
+	numeroDeControle      = "+221000000000"
+	autreNumeroDeControle = "+221000000001"
+)
+
+// ErrNonDeterministe signale un empreinteur qui ne donne pas deux fois la même
+// empreinte pour le même numéro (PS256 au lieu de RS256, par exemple).
+var ErrNonDeterministe = errors.New("l'empreinteur n'est pas déterministe : les doublons ne seraient pas détectés (RS256 attendu, jamais PS256)")
 
 // VerifierDeterminisme calcule deux fois l'empreinte d'une valeur de contrôle
-// et renvoie une erreur si les résultats diffèrent (spec §5.4, test T5).
+// et renvoie une erreur si les résultats diffèrent (spec §5.4, test T5). Il
+// vérifie aussi que deux valeurs différentes donnent deux empreintes
+// différentes. Le serveur l'appelle au démarrage, quel que soit le mode.
 func VerifierDeterminisme(ctx context.Context, e Empreinteur) error {
-	a, err := e.Calculer(ctx, numeroDeControle)
-	if err != nil {
-		return fmt.Errorf("empreinte de contrôle : %w", err)
+	calculer := func(n string) (Empreinte, error) {
+		v, err := e.Calculer(ctx, n)
+		if err != nil {
+			return v, fmt.Errorf("empreinte de contrôle : %w", err)
+		}
+		return v, nil
 	}
-	b, err := e.Calculer(ctx, numeroDeControle)
+	a, err := calculer(numeroDeControle)
 	if err != nil {
-		return fmt.Errorf("empreinte de contrôle : %w", err)
+		return err
+	}
+	b, err := calculer(numeroDeControle)
+	if err != nil {
+		return err
 	}
 	if !bytes.Equal(a[:], b[:]) {
-		return errors.New("l'empreinteur n'est pas déterministe : les doublons ne seraient pas détectés")
+		return ErrNonDeterministe
+	}
+	c, err := calculer(autreNumeroDeControle)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(a[:], c[:]) || a == (Empreinte{}) {
+		return errors.New("l'empreinteur donne la même empreinte à deux numéros différents")
 	}
 	return nil
 }
 
 // Construire choisit l'empreinteur d'après DIGUEE_EMPREINTEUR et le déclare
-// dans le registre des intégrations.
+// dans le registre des intégrations. Les modes ovh et gcp ne sont pas
+// « fake » : ils sont admis en production. Construire ne fait aucun appel au
+// KMS ; VerifierDeterminisme s'en charge au démarrage.
 func Construire(c *config.Config, r *integration.Registre) (Empreinteur, error) {
 	var e Empreinteur
 	switch c.Empreinteur {
 	case integration.ModeFake:
 		e = NouveauHMACLocal(nil)
+	case "ovh":
+		o := c.OVHKMS
+		cert, err := tls.LoadX509KeyPair(o.Certificat, o.CleClient)
+		if err != nil {
+			return nil, fmt.Errorf("KMS OVH : certificat client (DIGUEE_OVH_KMS_CERTIFICAT, DIGUEE_OVH_KMS_CLE_CLIENT) illisible : %w", err)
+		}
+		ac, err := autorites(o.AC)
+		if err != nil {
+			return nil, fmt.Errorf("KMS OVH (DIGUEE_OVH_KMS_AC) : %w", err)
+		}
+		e, err = NouveauOVH(OptionsOVH{
+			PointAcces: o.PointAcces, KMSID: o.ID, CleID: o.CleID, Delai: c.KMSDelai,
+			TLS: &tls.Config{Certificates: []tls.Certificate{cert}, RootCAs: ac, MinVersion: tls.VersionTLS12},
+		})
+		if err != nil {
+			return nil, err
+		}
+	case "gcp":
+		g := c.GCPKMS
+		ac, err := autorites(g.AC)
+		if err != nil {
+			return nil, fmt.Errorf("KMS Google Cloud (DIGUEE_GCP_KMS_AC) : %w", err)
+		}
+		e, err = NouveauGCP(OptionsGCP{
+			PointAcces: g.PointAcces, Cle: g.Cle, JetonFichier: g.JetonFichier, Delai: c.KMSDelai,
+			TLS: &tls.Config{RootCAs: ac, MinVersion: tls.VersionTLS12},
+		})
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("DIGUEE_EMPREINTEUR : mode %q non pris en charge", c.Empreinteur)
 	}

@@ -15,7 +15,7 @@ Site : https://diguee.sn · Contact : @digueeboorla
 | `internal/config` | Lecture des variables d'environnement `DIGUEE_*`, valeurs « À COMPLÉTER » |
 | `internal/integration` | Registre où chaque service externe déclare son mode (`fake` ou réel) |
 | `internal/garde` | Refus de démarrer en production s'il reste une valeur provisoire ou une fausse implémentation |
-| `internal/empreinte` | Normalisation des numéros +221 et interface `Empreinteur` (implémentation de développement `fake` : HMAC à clé locale) |
+| `internal/empreinte` | Normalisation des numéros +221 et interface `Empreinteur` : `ovh` (KMS d'OVHcloud, signature RS256 puis SHA-256, mTLS), `gcp` (repli Google Cloud KMS, HMAC natif) et `fake` (HMAC à clé locale, développement) ; `fauxkms` : faux serveurs KMS pour les tests |
 | `internal/questionnaire` | Questionnaire versionné (Q1 à Q8, profil, « 18 ans ou plus ») : codes stockés et clés du catalogue |
 | `internal/tampon` | Tampon mélangé (ADR 0003) : écriture groupée à 20 envois, à 30 minutes et à l'arrêt, doublons refusés |
 | `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` |
@@ -99,7 +99,14 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_ENV` | `development` (ou `production`) | |
 | `DIGUEE_ADRESSE` | `:8080` | |
 | `DIGUEE_POSTGRES_URL` | obligatoire, secret | |
-| `DIGUEE_EMPREINTEUR` | `fake` (HMAC de développement, interdit en production) ; `ovh` au ticket #5 | |
+| `DIGUEE_EMPREINTEUR` | `fake` (HMAC de développement, interdit en production) ; `ovh` (KMS d'OVHcloud, RS256 puis SHA-256) ; `gcp` (repli Google Cloud KMS, HMAC natif) | |
+| `DIGUEE_OVH_KMS_POINT_ACCES` | obligatoire avec `ovh` : point d'accès régional `https://…okms.ovh.net` | |
+| `DIGUEE_OVH_KMS_ID`, `DIGUEE_OVH_KMS_CLE_ID` | obligatoires avec `ovh` : UUID du KMS et de la clé RSA de signature | |
+| `DIGUEE_OVH_KMS_CERTIFICAT`, `DIGUEE_OVH_KMS_CLE_CLIENT` | obligatoires avec `ovh` : chemins du certificat client mTLS et de sa clé privée (PEM, secret) | |
+| `DIGUEE_OVH_KMS_AC` | facultatif : autorités de certification (PEM) ; défaut : celles du système | |
+| `DIGUEE_GCP_KMS_CLE`, `DIGUEE_GCP_KMS_JETON_FICHIER` | obligatoires avec `gcp` : version de clé HMAC et fichier du jeton d'accès (secret) | |
+| `DIGUEE_GCP_KMS_POINT_ACCES`, `DIGUEE_GCP_KMS_AC` | `https://cloudkms.googleapis.com` ; facultatif | |
+| `DIGUEE_KMS_DELAI` | `5s` (délai d'attente d'un appel au KMS) | |
 | `DIGUEE_CLE_TOTP` | absente : clé de développement (intégration `chiffrement_totp` en mode `fake`, interdite en production) ; secret, 64 chiffres hexadécimaux | |
 | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | À COMPLÉTER | (ADR 0005) |
 | `DIGUEE_CONTACT` | À COMPLÉTER | |
@@ -122,6 +129,9 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_ALTCHA_DIFFICULTE` | `100000` (provisoire, réglé au ticket #8) | `ALTCHA_DIFFICULTE` |
 | `DIGUEE_PREAVIS_JOURS` | `15` | `PREAVIS_JOURS` |
 | `DIGUEE_TEST_POSTGRES_URL` | tests seulement | |
+| `DIGUEE_TEST_KMS_REEL` | tests seulement : `ovh` ou `gcp` active le test contre le vrai KMS (`go test ./internal/empreinte -run TestKMSReel -v`) | |
+
+À chaque démarrage, quel que soit `DIGUEE_EMPREINTEUR`, le serveur calcule deux fois l'empreinte d'une valeur de contrôle et refuse de démarrer si les résultats diffèrent (spec T5), si deux valeurs différentes donnent la même empreinte ou si le KMS ne répond pas.
 
 Avec `DIGUEE_ENV=production`, le serveur refuse de démarrer si une valeur vaut « À COMPLÉTER », si une intégration déclarée dans `internal/integration` est en mode `fake`, ou si le questionnaire contient encore des choix provisoires (`Provisoire` dans `internal/questionnaire/v1.go`), et affiche la liste de ce qui manque.
 

@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,7 +60,10 @@ type Config struct {
 
 	// Intégrations externes : « fake » désigne une fausse implémentation,
 	// interdite en production (paquet garde).
-	Empreinteur string // DIGUEE_EMPREINTEUR : fake (défaut, HMAC de développement) ; ovh au ticket #5
+	Empreinteur string        // DIGUEE_EMPREINTEUR : fake (défaut, HMAC de développement), ovh ou gcp
+	OVHKMS      OVHKMS        // réglages de DIGUEE_EMPREINTEUR=ovh
+	GCPKMS      GCPKMS        // réglages de DIGUEE_EMPREINTEUR=gcp (repli, ADR 0006)
+	KMSDelai    time.Duration // DIGUEE_KMS_DELAI : délai d'attente d'un appel au KMS, 5s
 
 	// CleTOTP chiffre les secrets TOTP de l'espace équipe (AES-256-GCM). Secret,
 	// 32 octets. Vide : clé de développement écrite dans le code, déclarée
@@ -97,6 +102,34 @@ type Config struct {
 	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15
 }
 
+// OVHKMS décrit l'accès au KMS d'OVHcloud (spec §5.4). L'authentification se
+// fait par certificat client (mTLS). Aucun de ces champs n'est un secret en
+// soi : la clé privée du certificat reste dans son fichier, qui n'est lu
+// qu'au démarrage et n'est jamais journalisé.
+type OVHKMS struct {
+	PointAcces string // DIGUEE_OVH_KMS_POINT_ACCES : https://eu-west-par.okms.ovh.net par exemple
+	ID         string // DIGUEE_OVH_KMS_ID : identifiant (UUID) du KMS
+	CleID      string // DIGUEE_OVH_KMS_CLE_ID : identifiant (UUID) de la clé RSA de signature
+	Certificat string // DIGUEE_OVH_KMS_CERTIFICAT : chemin du certificat client (PEM)
+	CleClient  string // DIGUEE_OVH_KMS_CLE_CLIENT : chemin de la clé privée du certificat client (PEM), secret
+	AC         string // DIGUEE_OVH_KMS_AC : chemin d'autorités de certification (PEM), facultatif
+}
+
+// GCPKMS décrit l'accès à Google Cloud KMS (HMAC natif, méthode macSign).
+// Le jeton d'accès OAuth 2 est lu dans un fichier à chaque appel : un
+// processus extérieur le renouvelle (il expire au bout d'une heure).
+type GCPKMS struct {
+	PointAcces   string // DIGUEE_GCP_KMS_POINT_ACCES : https://cloudkms.googleapis.com
+	Cle          string // DIGUEE_GCP_KMS_CLE : projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N
+	JetonFichier string // DIGUEE_GCP_KMS_JETON_FICHIER : chemin du fichier qui contient le jeton d'accès, secret
+	AC           string // DIGUEE_GCP_KMS_AC : chemin d'autorités de certification (PEM), facultatif
+}
+
+var (
+	motifUUID   = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	motifCleGCP = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
+)
+
 // Charger lit la configuration avec la fonction getenv (os.Getenv en
 // pratique). Toutes les erreurs sont renvoyées ensemble.
 func Charger(getenv func(string) string) (*Config, error) {
@@ -115,7 +148,26 @@ func Charger(getenv func(string) string) (*Config, error) {
 		l.erreur("DIGUEE_POSTGRES_URL", errors.New("est obligatoire"))
 	}
 
-	c.Empreinteur = l.choix("DIGUEE_EMPREINTEUR", "fake", "fake")
+	c.Empreinteur = l.choix("DIGUEE_EMPREINTEUR", "fake", "fake", "ovh", "gcp")
+	c.KMSDelai = l.duree("DIGUEE_KMS_DELAI", "5s")
+	switch c.Empreinteur {
+	case "ovh":
+		c.OVHKMS = OVHKMS{
+			PointAcces: l.adresseHTTPS("DIGUEE_OVH_KMS_POINT_ACCES", ""),
+			ID:         l.motif("DIGUEE_OVH_KMS_ID", motifUUID, "un UUID"),
+			CleID:      l.motif("DIGUEE_OVH_KMS_CLE_ID", motifUUID, "un UUID"),
+			Certificat: l.obligatoire("DIGUEE_OVH_KMS_CERTIFICAT"),
+			CleClient:  l.obligatoire("DIGUEE_OVH_KMS_CLE_CLIENT"),
+			AC:         l.chaine("DIGUEE_OVH_KMS_AC", ""),
+		}
+	case "gcp":
+		c.GCPKMS = GCPKMS{
+			PointAcces:   l.adresseHTTPS("DIGUEE_GCP_KMS_POINT_ACCES", "https://cloudkms.googleapis.com"),
+			Cle:          l.motif("DIGUEE_GCP_KMS_CLE", motifCleGCP, "projects/…/locations/…/keyRings/…/cryptoKeys/…/cryptoKeyVersions/N"),
+			JetonFichier: l.obligatoire("DIGUEE_GCP_KMS_JETON_FICHIER"),
+			AC:           l.chaine("DIGUEE_GCP_KMS_AC", ""),
+		}
+	}
 	c.CleTOTP = l.cle("DIGUEE_CLE_TOTP", 32)
 
 	c.StructureNom = l.texte("DIGUEE_STRUCTURE_NOM")
@@ -216,6 +268,38 @@ func (l *lecteur) choix(nom, defaut string, permis ...string) string {
 	v := l.chaine(nom, defaut)
 	if !slices.Contains(permis, v) {
 		l.erreur(nom, fmt.Errorf("vaut %q ; valeurs possibles : %s", v, strings.Join(permis, ", ")))
+	}
+	return v
+}
+
+// obligatoire lit une valeur qui doit être fournie.
+func (l *lecteur) obligatoire(nom string) string {
+	v := l.chaine(nom, "")
+	if v == "" {
+		l.erreur(nom, errors.New("est obligatoire avec ce DIGUEE_EMPREINTEUR"))
+	}
+	return v
+}
+
+// motif lit une valeur obligatoire qui doit respecter une forme.
+func (l *lecteur) motif(nom string, m *regexp.Regexp, attendu string) string {
+	v := l.obligatoire(nom)
+	if v != "" && !m.MatchString(v) {
+		l.erreur(nom, fmt.Errorf("vaut %q ; attendu %s", v, attendu))
+	}
+	return v
+}
+
+// adresseHTTPS lit une adresse https:// sans chemin ni paramètres, sans « / » final.
+func (l *lecteur) adresseHTTPS(nom, defaut string) string {
+	v := strings.TrimRight(l.chaine(nom, defaut), "/")
+	if v == "" {
+		l.erreur(nom, errors.New("est obligatoire avec ce DIGUEE_EMPREINTEUR"))
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.User != nil {
+		l.erreur(nom, fmt.Errorf("vaut %q ; attendu une adresse https:// sans chemin, par exemple https://eu-west-par.okms.ovh.net", v))
 	}
 	return v
 }

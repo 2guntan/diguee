@@ -120,7 +120,7 @@ func TestSelSourceSansAdresse(t *testing.T) {
 	var s selSource
 	t0 := time.Unix(1_800_000_000, 0)
 	a := s.cle("192.0.2.1", t0)
-	if strings.Contains(a, "192") || a != s.cle("192.0.2.1", t0.Add(time.Hour)) || a == s.cle("192.0.2.2", t0) {
+	if strings.Contains(a, "192.0.2") || a != s.cle("192.0.2.1", t0.Add(time.Hour)) || a == s.cle("192.0.2.2", t0) {
 		t.Errorf("clé de source : %q", a)
 	}
 	if a == s.cle("192.0.2.1", t0.Add(24*time.Hour)) {

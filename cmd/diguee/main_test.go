@@ -120,10 +120,15 @@ func TestSIGTERMEcritLeTampon(t *testing.T) {
 // son erreur de sortie.
 func demarrer(t *testing.T) (racine string, arreter func() error) {
 	t.Helper()
+	return demarrerAvec(t, silencieux())
+}
+
+func demarrerAvec(t *testing.T, j *slog.Logger) (racine string, arreter func() error) {
+	t.Helper()
 	adresse := adresseLibre(t)
 	t.Setenv("DIGUEE_ADRESSE", adresse)
 	fin := make(chan error, 1)
-	go func() { fin <- lancer(nil, silencieux()) }()
+	go func() { fin <- lancer(nil, j) }()
 	racine = "http://" + adresse
 	pret := false
 	for range 100 {

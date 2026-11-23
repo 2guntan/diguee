@@ -122,8 +122,19 @@ func TestEmpreinteurFauxInterditEnProduction(t *testing.T) {
 }
 
 func TestModeInconnu(t *testing.T) {
-	m := map[string]string{"DIGUEE_POSTGRES_URL": "x", "DIGUEE_EMPREINTEUR": "ovh"}
-	if _, err := config.Charger(func(k string) string { return m[k] }); err == nil {
-		t.Error("le mode ovh n'existe pas encore et devrait être refusé")
+	m := map[string]string{"DIGUEE_POSTGRES_URL": "x", "DIGUEE_EMPREINTEUR": "aws"}
+	if _, err := config.Charger(func(k string) string { return m[k] }); err == nil ||
+		!strings.Contains(err.Error(), "fake, ovh, gcp") {
+		t.Errorf("un mode inconnu devrait être refusé : %v", err)
+	}
+}
+
+type constant struct{}
+
+func (constant) Calculer(context.Context, string) (Empreinte, error) { return Empreinte{1}, nil }
+
+func TestDeterminismeExigeDesEmpreintesDistinctes(t *testing.T) {
+	if err := VerifierDeterminisme(context.Background(), constant{}); err == nil {
+		t.Error("un empreinteur qui donne toujours la même empreinte devrait être refusé")
 	}
 }

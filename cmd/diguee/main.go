@@ -174,7 +174,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: session.NouveauMagasin(), Questionnaire: q,
 		Equipe: espaceEquipe,
-		// Seule la vérification factice existe pour l'instant (tickets #5, #6,
+		// Seule la vérification factice existe pour l'instant (tickets #6,
 		// #9 et #10 pour les vraies) ; elle n'est jamais servie en production.
 		VerificationFactice: cfg.Env != config.Production,
 	})
