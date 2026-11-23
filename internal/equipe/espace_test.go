@@ -87,7 +87,10 @@ type banc struct {
 func nouveauBanc(t *testing.T) *banc {
 	t.Helper()
 	t.Cleanup(equipe.IterationsPourTests(1000))
-	b, sc := basetest.OuvrirMigree(t)
+	// Rôle de l'application, comme en production (ticket #7) : la gestion
+	// des comptes ne modifie que les colonnes permises de membre.
+	app := basetest.OuvrirApplication(t)
+	b, sc := app.App, app.Schema
 	cfg, err := config.Charger(func(k string) string {
 		return map[string]string{"DIGUEE_POSTGRES_URL": "postgres://localhost/diguee"}[k]
 	})

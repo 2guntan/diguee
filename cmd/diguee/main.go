@@ -1,7 +1,12 @@
 // Commande diguee : l'exécutable unique de la plateforme.
 //
-//	diguee                  lance le serveur (migrations comprises)
-//	diguee migrer           applique les migrations puis s'arrête
+//	diguee                  lance le serveur ; en développement, applique aussi
+//	                        les migrations ; en production, vérifie que le
+//	                        schéma est à jour et que son rôle PostgreSQL n'a
+//	                        que les droits de l'application
+//	diguee migrer           applique les migrations avec le rôle propriétaire
+//	                        (DIGUEE_POSTGRES_URL_MIGRATIONS) et accorde ses
+//	                        droits au rôle de l'application, puis s'arrête
 //	diguee verifier-config  affiche ce qui manque pour la production
 //	diguee version          affiche la version et le SHA-256 de l'exécutable
 //	diguee creer-membre -identifiant ID -nom NOM [-roles R1,R2]
@@ -15,6 +20,9 @@
 //	                        encore, et met à niveau les preuves précédentes
 //	diguee verifier-journal [-attendu EMPREINTE]... [-precedent ANCIEN] <fichier.json|url>
 //	                        vérifie un export du journal public (sans configuration ni base)
+//	diguee cle-volume creer -sortie FICHIER | dechiffrer -entree FICHIER
+//	                        clé du volume chiffré (LUKS), chiffrée par le KMS
+//	                        d'OVHcloud (voir deploiement/README.md)
 package main
 
 import (
@@ -39,9 +47,11 @@ import (
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/equipe"
 	"github.com/2guntan/diguee/internal/garde"
+	"github.com/2guntan/diguee/internal/https"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
 	journalpublic "github.com/2guntan/diguee/internal/journal"
+	"github.com/2guntan/diguee/internal/masque"
 	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
@@ -62,7 +72,16 @@ func main() {
 		}
 		return
 	}
-	journal := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if len(os.Args) > 1 && os.Args[1] == "cle-volume" {
+		if err := cleVolume(context.Background(), os.Args[2:], os.Getenv, os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "diguee cle-volume :", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// Défense en profondeur (spec E6, T3) : toute IP ou tout numéro qui
+	// apparaîtrait dans un message ou une erreur est masqué.
+	journal := slog.New(masque.Nouveau(slog.NewJSONHandler(os.Stderr, nil)))
 	if err := lancer(os.Args[1:], journal); err != nil {
 		journal.Error(err.Error())
 		os.Exit(1)
@@ -87,6 +106,11 @@ func lancer(args []string, journal *slog.Logger) error {
 	cfg, err := config.Charger(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("configuration invalide :\n%w", err)
+	}
+	if commande == "migrer" {
+		// Ni intégration ni garde : seulement la base, avec le rôle
+		// propriétaire.
+		return migrer(context.Background(), cfg, journal)
 	}
 
 	// Chaque intégration externe (KMS, WhatsApp, SMS, stockage, ancrage) est
@@ -161,12 +185,8 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	defer b.Fermer()
-	appliquees, err := b.Migrer(ctx)
-	if err != nil {
-		return fmt.Errorf("migrations : %w", err)
-	}
-	for _, m := range appliquees {
-		journal.Info("migration appliquée", "migration", m)
+	if err := preparerBase(ctx, cfg, b, journal); err != nil {
+		return err
 	}
 
 	sessionsEquipe := equipe.NouvellesSessions(nil)
@@ -207,8 +227,6 @@ func lancer(args []string, journal *slog.Logger) error {
 	}
 
 	switch commande {
-	case "migrer":
-		return nil
 	case "creer-membre":
 		return creerMembre(ctx, serviceEquipe, args[1:], os.Stdout)
 	case "publier":
@@ -217,7 +235,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		return ancrer(ctx, ancreur, os.Stdout)
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, ancrer, verifier-config, version, verifier-journal)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, ancrer, verifier-config, version, verifier-journal, cle-volume)", commande)
 	}
 
 	// Journal public : une entrée « mise en production » à chaque démarrage sur
@@ -345,20 +363,17 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 
-	serveur := &http.Server{
-		Addr:              cfg.Adresse,
-		Handler:           srv,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		// Les erreurs internes de net/http citent l'adresse IP du client : elles
-		// ne sont pas journalisées (spec E6).
-		ErrorLog: log.New(io.Discard, "", 0),
+	// HTTP simple (développement) ou HTTPS avec un certificat Let's
+	// Encrypt (production, ADR 0007) : le TLS s'arrête sur ce serveur.
+	lancement, err := construireServeurs(cfg, srv, journal)
+	if err != nil {
+		return err
 	}
-	erreurs := make(chan error, 1)
-	go func() { erreurs <- serveur.ListenAndServe() }()
-	journal.Info("serveur démarré", "adresse", cfg.Adresse, "env", cfg.Env,
+	erreurs, err := lancement.demarrer()
+	if err != nil {
+		return err
+	}
+	journal.Info("serveur démarré", "adresse", lancement.adresse, "tls", cfg.TLS.Mode, "env", cfg.Env,
 		"version", version.Version(), "sha256", sha)
 
 	var errServeur error
@@ -369,7 +384,7 @@ func lancer(args []string, journal *slog.Logger) error {
 	}
 	fin, annuler := context.WithTimeout(context.Background(), 20*time.Second)
 	defer annuler()
-	if err := serveur.Shutdown(fin); err != nil && !errors.Is(err, context.DeadlineExceeded) && errServeur == nil {
+	if err := lancement.arreter(fin); err != nil && !errors.Is(err, context.DeadlineExceeded) && errServeur == nil {
 		errServeur = err
 	}
 	// Plus aucune requête en cours : le tampon est écrit, même incomplet.
@@ -425,4 +440,111 @@ func ancrer(ctx context.Context, a *ancrage.Ancreur, sortie io.Writer) error {
 		fmt.Fprintf(sortie, "%d preuve(s) complétée(s) d'une attestation Bitcoin\n", bilan.MisesANiveau)
 	}
 	return err
+}
+
+// lancement réunit le ou les serveurs HTTP du mode choisi.
+type lancement struct {
+	adresse  string
+	demarrer func() (<-chan error, error)
+	arreter  func(context.Context) error
+}
+
+// construireServeurs prépare le serveur HTTP simple (DIGUEE_TLS=non) ou les
+// serveurs HTTPS et HTTP du mode ACME.
+func construireServeurs(cfg *config.Config, site http.Handler, journal *slog.Logger) (*lancement, error) {
+	if cfg.TLS.Mode == "acme" {
+		s, err := https.Construire(https.Options{
+			URLPublique: cfg.URLPublique, Cache: cfg.TLS.Cache, Annuaire: cfg.TLS.Annuaire, Courriel: cfg.TLS.Courriel,
+			AdresseHTTPS: cfg.TLS.AdresseHTTPS, AdresseHTTP: cfg.TLS.AdresseHTTP, Journal: journal,
+		}, site)
+		if err != nil {
+			return nil, err
+		}
+		return &lancement{adresse: cfg.TLS.AdresseHTTPS + " " + cfg.TLS.AdresseHTTP, demarrer: s.Lancer, arreter: s.Arreter}, nil
+	}
+	serveur := &http.Server{
+		Addr:              cfg.Adresse,
+		Handler:           site,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// Les erreurs internes de net/http citent l'adresse IP du client : elles
+		// ne sont pas journalisées (spec E6).
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+	return &lancement{
+		adresse: cfg.Adresse,
+		demarrer: func() (<-chan error, error) {
+			erreurs := make(chan error, 1)
+			go func() { erreurs <- serveur.ListenAndServe() }()
+			return erreurs, nil
+		},
+		arreter: serveur.Shutdown,
+	}, nil
+}
+
+// preparerBase : en production, le serveur n'applique pas les migrations (il
+// n'a pas les droits du propriétaire) ; il vérifie que le schéma est à jour
+// et refuse de démarrer si son rôle est propriétaire, superutilisateur ou a
+// des droits de trop (ticket #7). En développement, il applique les
+// migrations, avec DIGUEE_POSTGRES_URL_MIGRATIONS si elle est donnée.
+func preparerBase(ctx context.Context, cfg *config.Config, b *base.Base, journal *slog.Logger) error {
+	if cfg.Env == config.Production {
+		if err := b.VerifierSchemaAJour(ctx); err != nil {
+			return err
+		}
+		return b.VerifierRoleApplication(ctx)
+	}
+	if cfg.PostgresURLMigrations == "" || cfg.PostgresURLMigrations == cfg.PostgresURL {
+		return appliquerMigrations(ctx, b, false, journal)
+	}
+	return migrer(ctx, cfg, journal)
+}
+
+// migrer applique les migrations avec le rôle propriétaire
+// (DIGUEE_POSTGRES_URL_MIGRATIONS, obligatoire en production), puis accorde
+// au rôle de l'application exactement ses droits.
+func migrer(ctx context.Context, cfg *config.Config, journal *slog.Logger) error {
+	url, nom := cfg.PostgresURLMigrations, "DIGUEE_POSTGRES_URL_MIGRATIONS"
+	if url == "" {
+		if cfg.Env == config.Production {
+			return errors.New("DIGUEE_POSTGRES_URL_MIGRATIONS (rôle propriétaire) est obligatoire pour diguee migrer en production")
+		}
+		url, nom = cfg.PostgresURL, "DIGUEE_POSTGRES_URL"
+	}
+	b, err := base.OuvrirVariable(ctx, url, nom)
+	if err != nil {
+		return err
+	}
+	defer b.Fermer()
+	return appliquerMigrations(ctx, b, cfg.Env == config.Production, journal)
+}
+
+// appliquerMigrations migre puis accorde les droits de l'application. Sans
+// le rôle base.RoleApplication, les droits ne sont pas accordés : refus en
+// production, rien en développement (base locale à un seul rôle).
+func appliquerMigrations(ctx context.Context, b *base.Base, exigerRole bool, journal *slog.Logger) error {
+	appliquees, err := b.Migrer(ctx)
+	if err != nil {
+		return fmt.Errorf("migrations : %w", err)
+	}
+	for _, m := range appliquees {
+		journal.Info("migration appliquée", "migration", m)
+	}
+	existe, err := b.RoleExiste(ctx, base.RoleApplication)
+	if err != nil {
+		return err
+	}
+	if !existe {
+		if exigerRole {
+			return fmt.Errorf("%w : %s (voir deploiement/postgresql/roles.sql)", base.ErrRoleAbsent, base.RoleApplication)
+		}
+		return nil
+	}
+	if err := b.AccorderDroits(ctx, base.RoleApplication); err != nil {
+		return err
+	}
+	journal.Info("droits de l'application accordés", "role", base.RoleApplication)
+	return nil
 }

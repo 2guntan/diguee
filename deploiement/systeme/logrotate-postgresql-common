@@ -1,0 +1,14 @@
+# Diguee (ticket #7) : remplace /etc/logrotate.d/postgresql-common ; les
+# journaux de PostgreSQL vont dans journald (log_destination = syslog), ce
+# fichier ne reçoit que les messages de démarrage. 14 jours au plus.
+/var/log/postgresql/*.log {
+	daily
+	rotate 13
+	maxage 14
+	copytruncate
+	compress
+	delaycompress
+	missingok
+	notifempty
+	su root root
+}

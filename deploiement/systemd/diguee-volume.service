@@ -1,0 +1,30 @@
+# Déverrouillage du volume chiffré (LUKS) des données : la clé, chiffrée par
+# le KMS d'OVHcloud, est déchiffrée par « diguee cle-volume dechiffrer » et
+# passée à cryptsetup par un tube, puis le volume est monté sur
+# /srv/diguee-donnees. Procédure de secours : deploiement/README.md.
+[Unit]
+Description=Diguee : déverrouillage du volume chiffré (clé déchiffrée par le KMS)
+Wants=network-online.target
+After=network-online.target nss-lookup.target time-sync.target
+Before=postgresql@16-main.service diguee.service diguee-migrer.service
+ConditionPathExists=/etc/diguee/volume.cle.jwe
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/diguee/volume.env
+ExecStart=/usr/local/lib/diguee/volume.sh ouvrir
+ExecStop=/usr/local/lib/diguee/volume.sh fermer
+# Jusqu'à 10 essais auprès du KMS (réseau pas encore prêt).
+TimeoutStartSec=6min
+SyslogIdentifier=diguee-volume
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

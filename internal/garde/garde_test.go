@@ -75,8 +75,19 @@ func TestDeveloppementToleré(t *testing.T) {
 	if err := Verifier(c, &r); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(Manques(c, &r)); n != 10 {
-		t.Errorf("%d manques, attendu 10 (9 valeurs et 1 intégration)", n)
+	if n := len(Manques(c, &r)); n != 11 {
+		t.Errorf("%d manques, attendu 11 (9 valeurs, DIGUEE_TLS et 1 intégration)", n)
+	}
+}
+
+// HTTP simple refusé en production (ticket #7).
+func TestProductionRefuseLeHTTPSimple(t *testing.T) {
+	var r integration.Registre
+	env := complete("production")
+	env["DIGUEE_TLS"] = "non"
+	err := Verifier(charger(t, env), &r)
+	if err == nil || !strings.Contains(err.Error(), "DIGUEE_TLS") {
+		t.Fatalf("refus attendu sur DIGUEE_TLS : %v", err)
 	}
 }
 

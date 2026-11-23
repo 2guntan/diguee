@@ -127,7 +127,11 @@ func (h *horloge) avancer(d time.Duration) {
 
 func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	t.Helper()
-	b, sc := basetest.OuvrirMigree(t)
+	// Le serveur se connecte avec le rôle de l'application (ticket #7) :
+	// SELECT et INSERT seulement, comme en production. pg_dump lit le schéma
+	// avec le rôle propriétaire.
+	app := basetest.OuvrirApplication(t)
+	b, sc := app.App, app.Schema
 	env["DIGUEE_POSTGRES_URL"] = "postgres://localhost/diguee"
 	if _, ok := env["DIGUEE_OUVERTURE"]; !ok {
 		env["DIGUEE_OUVERTURE"] = "2026-11-01"

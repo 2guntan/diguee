@@ -41,6 +41,16 @@ jobs:
         run: go vet ./...
       - name: pg_dump (test T1/T2)
         run: pg_dump --version
+      # Les tests créent eux-mêmes les rôles diguee_application et
+      # diguee_test_app (ticket #7) : l'utilisateur diguee du service est
+      # superutilisateur.
+      - name: Pebble, serveur ACME de test (ticket #7)
+        run: |
+          go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.8.0 github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.8.0
+          echo "DIGUEE_TEST_PEBBLE=$(go env GOPATH)/bin" >> "$GITHUB_ENV"
+          echo "DIGUEE_TEST_PEBBLE_DOSSIER=$(go env GOMODCACHE)/github.com/letsencrypt/pebble/v2@v2.8.0" >> "$GITHUB_ENV"
+      - name: shellcheck (deploiement/)
+        run: shellcheck -x deploiement/*.sh deploiement/essais/*.sh
       - name: go test
         run: go test ./...
       - name: Build reproductible

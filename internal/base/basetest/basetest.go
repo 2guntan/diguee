@@ -9,9 +9,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,4 +113,80 @@ func OuvrirSchema(t testing.TB) (*base.Base, Schema) {
 	}
 	t.Cleanup(b.Fermer)
 	return b, sc
+}
+
+// RoleTest est le rôle de connexion des tests qui jouent le rôle de
+// l'application : membre de base.RoleApplication, sans autre droit. Il est
+// créé au besoin (le rôle de DIGUEE_TEST_POSTGRES_URL doit pouvoir créer des
+// rôles : c'est le cas du superutilisateur local et de celui de la CI). Son
+// mot de passe ne protège que la base de test.
+const RoleTest = "diguee_test_app"
+
+// verrouRoles sérialise la création des rôles entre les paquets de tests,
+// lancés en parallèle sur la même base.
+const verrouRoles = 0x6469677565655f72
+
+// Application décrit une base de test vue par le rôle de l'application.
+type Application struct {
+	Proprietaire *base.Base // connexion du test, propriétaire du schéma
+	App          *base.Base // connexion avec RoleTest, droits de l'application seulement
+	Schema       Schema     // schéma et URL du propriétaire
+	URLApp       string     // URL de la base de test avec RoleTest, sur ce schéma
+}
+
+// OuvrirApplication renvoie une base migrée dans un schéma propre au test,
+// avec les droits de l'application accordés à base.RoleApplication comme
+// le fait « diguee migrer », et une seconde connexion avec RoleTest, qui
+// n'a que ces droits (ticket #7).
+func OuvrirApplication(t testing.TB) Application {
+	t.Helper()
+	proprio, sc := OuvrirMigree(t)
+	ctx := context.Background()
+	creerRoles(t)
+	if err := proprio.AccorderDroits(ctx, base.RoleApplication); err != nil {
+		t.Fatalf("droits de l'application : %v", err)
+	}
+	u, err := url.Parse(sc.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(RoleTest, RoleTest)
+	cfg, err := pgxpool.ParseConfig(u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := base.OuvrirAvec(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connexion avec le rôle %s : %v", RoleTest, err)
+	}
+	t.Cleanup(app.Fermer)
+	return Application{Proprietaire: proprio, App: app, Schema: sc, URLApp: u.String()}
+}
+
+// creerRoles crée base.RoleApplication (NOLOGIN) et RoleTest s'ils manquent.
+func creerRoles(t testing.TB) {
+	t.Helper()
+	ctx := context.Background()
+	admin, err := pgx.Connect(ctx, os.Getenv(Variable))
+	if err != nil {
+		t.Fatalf("connexion à %s : %v", Variable, err)
+	}
+	defer admin.Close(ctx)
+	if _, err := admin.Exec(ctx, "SELECT pg_advisory_lock($1)", int64(verrouRoles)); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "SELECT pg_advisory_unlock($1)", int64(verrouRoles))
+	for _, ordre := range []string{
+		"CREATE ROLE " + base.RoleApplication + " NOLOGIN",
+		"CREATE ROLE " + RoleTest + " LOGIN PASSWORD '" + RoleTest + "' IN ROLE " + base.RoleApplication,
+	} {
+		if _, err := admin.Exec(ctx, ordre); err != nil {
+			var pgErr *pgconn.PgError
+			// 42710 : le rôle existe déjà (créé par un autre test).
+			if errors.As(err, &pgErr) && pgErr.Code == "42710" {
+				continue
+			}
+			t.Fatalf("%s : %v", ordre, err)
+		}
+	}
 }

@@ -10,6 +10,8 @@ package fauxkms
 
 import (
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -146,6 +148,7 @@ func cleRSATest(t testing.TB) *rsa.PrivateKey {
 type OVH struct {
 	commun
 	KMSID, CleID          string
+	CleVolumeID           string // clé symétrique des opérations encrypt et decrypt (clé du volume)
 	Certificat, CleClient string // fichiers PEM du certificat client accepté
 	cle                   *rsa.PrivateKey
 }
@@ -180,9 +183,10 @@ func DemarrerOVH(t testing.TB) *OVH {
 
 	o := &OVH{
 		KMSID: "7745c93b-8ed3-4eef-921c-87bd8bbdd01b", CleID: "2dab95dc-d7d3-482b-a07b-6b4dfae89d58",
-		Certificat: ecrirePEM(t, dir, "client.pem", "CERTIFICATE", derCli),
-		CleClient:  ecrirePEM(t, dir, "client.key", "PRIVATE KEY", derCleCli),
-		cle:        cleRSATest(t),
+		CleVolumeID: "5b6f1c0e-3f7a-4d8e-9b2a-1c4d5e6f7a8b",
+		Certificat:  ecrirePEM(t, dir, "client.pem", "CERTIFICATE", derCli),
+		CleClient:   ecrirePEM(t, dir, "client.key", "PRIVATE KEY", derCleCli),
+		cle:         cleRSATest(t),
 	}
 	o.t = t
 	pool := x509.NewCertPool()
@@ -221,6 +225,10 @@ func (o *OVH) Signature(message string) []byte {
 }
 
 func (o *OVH) servir(w http.ResponseWriter, r *http.Request) {
+	if racine := "/api/" + o.KMSID + "/v1/servicekey/" + o.CleVolumeID + "/"; strings.HasPrefix(r.URL.Path, racine) {
+		o.servirVolume(w, r, strings.TrimPrefix(r.URL.Path, racine))
+		return
+	}
 	var corps struct {
 		Alg      *string `json:"alg"`
 		IsDigest *bool   `json:"isdigest"`
@@ -357,4 +365,124 @@ func (g *GCP) servir(w http.ResponseWriter, r *http.Request) {
 		"name": g.Cle, "mac": base64.StdEncoding.EncodeToString(mac),
 		"macCrc32c": somme, "verifiedDataCrc32c": !rg.NonVerifiee, "protectionLevel": "HSM",
 	})
+}
+
+// cleAESVolume est la clé symétrique du faux KMS (tirée une fois par
+// processus de test).
+var (
+	cleAESUnique sync.Once
+	cleAES       cipher.AEAD
+)
+
+func aeadVolume() cipher.AEAD {
+	cleAESUnique.Do(func() {
+		k := make([]byte, 32)
+		rand.Read(k)
+		bloc, _ := aes.NewCipher(k)
+		cleAES, _ = cipher.NewGCM(bloc)
+	})
+	return cleAES
+}
+
+// servirVolume imite les opérations encrypt et decrypt d'une clé de service
+// symétrique : le texte chiffré a la forme d'un JWE compact
+// (en-tête..iv.chiffré.étiquette, en base64url), le contexte est la donnée
+// authentifiée associée.
+func (o *OVH) servirVolume(w http.ResponseWriter, r *http.Request, operation string) {
+	var corps struct {
+		Plaintext  *string `json:"plaintext"`
+		Ciphertext *string `json:"ciphertext"`
+		Context    *string `json:"context"`
+	}
+	brut, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(brut, &corps); err != nil {
+		o.defaut("corps JSON invalide")
+	}
+	if _, suite := o.debut(w, r, ""); !suite {
+		return
+	}
+	switch {
+	case r.Method != http.MethodPost:
+		o.defaut("méthode %s", r.Method)
+	case r.Header.Get("Content-Type") != "application/json":
+		o.defaut("Content-Type %q", r.Header.Get("Content-Type"))
+	case r.TLS == nil || len(r.TLS.PeerCertificates) == 0:
+		o.defaut("pas de certificat client")
+	case corps.Context == nil || *corps.Context == "":
+		o.defaut("contexte absent")
+	}
+	contexte := ""
+	if corps.Context != nil {
+		contexte = *corps.Context
+	}
+	aead := aeadVolume()
+	b64 := base64.RawURLEncoding
+	erreur := func(statut int, message string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statut)
+		json.NewEncoder(w).Encode(map[string]any{"error_code": 1, "errors": []string{message}, "request_id": "faux"})
+	}
+	switch operation {
+	case "encrypt":
+		if corps.Plaintext == nil {
+			o.defaut("plaintext absent")
+			erreur(400, "plaintext absent")
+			return
+		}
+		clair, err := base64.StdEncoding.DecodeString(*corps.Plaintext)
+		if err != nil {
+			o.defaut("plaintext non encodé en base64 standard")
+			erreur(400, "base64")
+			return
+		}
+		iv := make([]byte, aead.NonceSize())
+		rand.Read(iv)
+		scelle := aead.Seal(nil, iv, clair, []byte(contexte))
+		n := len(scelle) - aead.Overhead()
+		jwe := b64.EncodeToString([]byte(`{"alg":"dir","enc":"A256GCM","kid":"`+o.CleVolumeID+`"}`)) + ".." +
+			b64.EncodeToString(iv) + "." + b64.EncodeToString(scelle[:n]) + "." + b64.EncodeToString(scelle[n:])
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"ciphertext": jwe})
+	case "decrypt":
+		if corps.Ciphertext == nil {
+			o.defaut("ciphertext absent")
+			erreur(400, "ciphertext absent")
+			return
+		}
+		parts := strings.Split(*corps.Ciphertext, ".")
+		if len(parts) != 5 {
+			erreur(400, "JWE invalide")
+			return
+		}
+		iv, e1 := b64.DecodeString(parts[2])
+		ct, e2 := b64.DecodeString(parts[3])
+		tag, e3 := b64.DecodeString(parts[4])
+		if e1 != nil || e2 != nil || e3 != nil || len(iv) != aead.NonceSize() {
+			erreur(400, "JWE invalide")
+			return
+		}
+		clair, err := aead.Open(nil, iv, append(ct, tag...), []byte(contexte))
+		if err != nil {
+			erreur(400, "déchiffrement impossible")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"plaintext": base64.StdEncoding.EncodeToString(clair)})
+	default:
+		o.defaut("opération %s", operation)
+		erreur(404, "opération inconnue")
+	}
+}
+
+// EnvVolume renvoie les variables DIGUEE_* de « diguee cle-volume » pour ce
+// faux KMS (même certificat client que l'empreinte).
+func (o *OVH) EnvVolume() map[string]string {
+	return map[string]string{
+		"DIGUEE_OVH_KMS_POINT_ACCES":       o.URL,
+		"DIGUEE_OVH_KMS_ID":                o.KMSID,
+		"DIGUEE_OVH_KMS_VOLUME_CLE_ID":     o.CleVolumeID,
+		"DIGUEE_OVH_KMS_VOLUME_CERTIFICAT": o.Certificat,
+		"DIGUEE_OVH_KMS_VOLUME_CLE_CLIENT": o.CleClient,
+		"DIGUEE_OVH_KMS_AC":                o.AC,
+	}
 }

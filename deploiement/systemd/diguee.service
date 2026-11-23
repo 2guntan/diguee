@@ -1,0 +1,76 @@
+# Diguee : l'exécutable unique, en HTTPS (Let's Encrypt), sous un
+# utilisateur dédié sans shell (deploiement/README.md, ticket #7).
+[Unit]
+Description=Diguee, consultation citoyenne (consultation.diguee.sn)
+Documentation=https://github.com/2guntan/diguee/blob/main/deploiement/README.md
+Wants=network-online.target
+After=network-online.target diguee-volume.service postgresql@16-main.service
+Requires=diguee-volume.service postgresql@16-main.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=diguee
+Group=diguee
+# Secrets (adresse de la base, clés, accès Meta, S3…) : fichier root 0600,
+# lu par systemd et jamais par le service. L'adresse du rôle propriétaire
+# n'y est pas (migrations.env, diguee-migrer.service seulement).
+EnvironmentFile=/etc/diguee/diguee.env
+Environment=DIGUEE_ENV=production
+Environment=DIGUEE_TLS=acme
+Environment=DIGUEE_ACME_CACHE=/srv/diguee-donnees/diguee/acme
+# Certificat client du KMS (empreinte) : fichiers root 0600, remis au seul
+# service par systemd, dans un dossier en mémoire.
+LoadCredential=kms-client.pem:/etc/diguee/kms-client.pem
+LoadCredential=kms-client.key:/etc/diguee/kms-client.key
+Environment=DIGUEE_OVH_KMS_CERTIFICAT=%d/kms-client.pem
+Environment=DIGUEE_OVH_KMS_CLE_CLIENT=%d/kms-client.key
+ExecStart=/opt/diguee/diguee
+# SIGTERM : le serveur écrit le tampon (ADR 0003) avant de s'arrêter.
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+Restart=on-failure
+RestartSec=5s
+
+# Journaux : sortie d'erreur vers journald (JSON, sans IP ni numéro),
+# conservés 14 jours (journald.conf.d/50-diguee.conf).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=diguee
+
+# Durcissement. Seule capacité : ouvrir les ports 80 et 443.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Dossier d'état, sur le volume chiffré : certificats Let's Encrypt et clé du
+# compte ACME (jamais en clair sur le disque système).
+ReadWritePaths=/srv/diguee-donnees/diguee
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

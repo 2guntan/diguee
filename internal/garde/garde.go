@@ -23,6 +23,11 @@ func Manques(c *config.Config, r *integration.Registre, autres ...Source) []stri
 	for _, nom := range c.Provisoires() {
 		ms = append(ms, fmt.Sprintf("%s vaut « %s »", nom, config.ACompleter))
 	}
+	// Le TLS s'arrête sur notre serveur (ADR 0007) : jamais de HTTP simple
+	// en production.
+	if c.TLS.Mode != "acme" {
+		ms = append(ms, fmt.Sprintf("DIGUEE_TLS vaut « %s » : HTTPS (acme) obligatoire", c.TLS.Mode))
+	}
 	for _, d := range r.Fausses() {
 		ms = append(ms, fmt.Sprintf("l'intégration %s est en mode %s (réglage : %s)", d.Nom, d.Mode, d.Variable))
 	}

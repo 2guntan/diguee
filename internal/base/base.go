@@ -34,10 +34,16 @@ type Base struct {
 
 // Ouvrir se connecte à PostgreSQL et vérifie la connexion.
 func Ouvrir(ctx context.Context, url string) (*Base, error) {
+	return OuvrirVariable(ctx, url, "DIGUEE_POSTGRES_URL")
+}
+
+// OuvrirVariable est Ouvrir pour une adresse lue dans la variable nom
+// (DIGUEE_POSTGRES_URL_MIGRATIONS, par exemple), citée en cas d'erreur.
+func OuvrirVariable(ctx context.Context, url, nom string) (*Base, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		// Le message d'erreur de pgx peut contenir l'URL, donc le mot de passe.
-		return nil, fmt.Errorf("DIGUEE_POSTGRES_URL invalide")
+		return nil, fmt.Errorf("%s invalide", nom)
 	}
 	return OuvrirAvec(ctx, cfg)
 }

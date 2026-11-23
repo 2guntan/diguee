@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -55,8 +56,16 @@ func (d Date) Provisoire() bool { return d.provisoire }
 // commentaire ; la correspondance avec la spec (§13) est dans le README.
 type Config struct {
 	Env         Env    // DIGUEE_ENV : development (défaut) ou production
-	Adresse     string // DIGUEE_ADRESSE : adresse d'écoute HTTP, « :8080 » par défaut
-	PostgresURL string // DIGUEE_POSTGRES_URL : secret, obligatoire
+	Adresse     string // DIGUEE_ADRESSE : adresse d'écoute HTTP sans TLS (DIGUEE_TLS=non), « :8080 » par défaut
+	PostgresURL string // DIGUEE_POSTGRES_URL : secret, obligatoire ; rôle de l'application (diguee_app) en production
+	// PostgresURLMigrations est l'adresse de la base avec le rôle
+	// propriétaire, pour « diguee migrer » seulement (ticket #7). Vide : la
+	// même que PostgresURL (développement) ; obligatoire pour « diguee
+	// migrer » en production, et absente de l'environnement du serveur.
+	PostgresURLMigrations string // DIGUEE_POSTGRES_URL_MIGRATIONS : secret
+
+	// TLS : HTTPS servi par l'exécutable, certificat Let's Encrypt (ACME).
+	TLS TLS
 
 	// Intégrations externes : « fake » désigne une fausse implémentation,
 	// interdite en production (paquet garde).
@@ -140,6 +149,20 @@ type Config struct {
 
 	// Ancrage extérieur du journal public (§10, ticket #12).
 	Ancrage Ancrage
+}
+
+// TLS règle le service en HTTPS (spec §11, ADR 0007, ticket #7).
+type TLS struct {
+	// Mode : non (HTTP simple sur DIGUEE_ADRESSE, défaut en développement,
+	// refusé en production) ou acme (HTTPS sur :443 avec un certificat
+	// Let's Encrypt, redirection et défi HTTP-01 sur :80 ; défaut en
+	// production). Le nom du certificat est celui de DIGUEE_URL_PUBLIQUE.
+	Mode         string // DIGUEE_TLS
+	AdresseHTTPS string // DIGUEE_ADRESSE_HTTPS : « :443 »
+	AdresseHTTP  string // DIGUEE_ADRESSE_HTTP : « :80 »
+	Cache        string // DIGUEE_ACME_CACHE : dossier des certificats et de la clé du compte ACME
+	Annuaire     string // DIGUEE_ACME_ANNUAIRE : annuaire ACME de production de Let's Encrypt
+	Courriel     string // DIGUEE_ACME_COURRIEL : contact du compte ACME, facultatif
 }
 
 // Ancrage règle l'ancrage quotidien du journal public : OpenTimestamps et
@@ -246,6 +269,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 	if c.PostgresURL == "" {
 		l.erreur("DIGUEE_POSTGRES_URL", errors.New("est obligatoire"))
 	}
+	c.PostgresURLMigrations = l.chaine("DIGUEE_POSTGRES_URL_MIGRATIONS", "")
 
 	c.Empreinteur = l.choix("DIGUEE_EMPREINTEUR", "fake", "fake", "ovh", "gcp")
 	c.KMSDelai = l.duree("DIGUEE_KMS_DELAI", "5s")
@@ -350,6 +374,24 @@ func Charger(getenv func(string) string) (*Config, error) {
 	}
 
 	c.URLPublique = l.adresseHTTPS("DIGUEE_URL_PUBLIQUE", "https://consultation.diguee.sn")
+	modeTLS := "non"
+	if c.Env == Production {
+		modeTLS = "acme"
+	}
+	c.TLS.Mode = l.choix("DIGUEE_TLS", modeTLS, "non", "acme")
+	if c.TLS.Mode == "acme" {
+		c.TLS.AdresseHTTPS = l.chaine("DIGUEE_ADRESSE_HTTPS", ":443")
+		c.TLS.AdresseHTTP = l.chaine("DIGUEE_ADRESSE_HTTP", ":80")
+		c.TLS.Cache = l.chaine("DIGUEE_ACME_CACHE", "/srv/diguee-donnees/diguee/acme")
+		c.TLS.Annuaire = l.chaineHTTPS("DIGUEE_ACME_ANNUAIRE", "https://acme-v02.api.letsencrypt.org/directory")
+		c.TLS.Courriel = l.chaine("DIGUEE_ACME_COURRIEL", "")
+		if c.TLS.Courriel != "" && !strings.Contains(c.TLS.Courriel, "@") {
+			l.erreur("DIGUEE_ACME_COURRIEL", errors.New("doit être une adresse électronique"))
+		}
+		if u, err := url.Parse(c.URLPublique); err == nil && (u.Port() != "" || net.ParseIP(u.Hostname()) != nil) {
+			l.erreur("DIGUEE_URL_PUBLIQUE", errors.New("doit être un nom d'hôte sans port avec DIGUEE_TLS=acme (certificat Let's Encrypt)"))
+		}
+	}
 	modeAncrage := "fake"
 	if c.Env == Production {
 		modeAncrage = "reel"
@@ -510,6 +552,15 @@ func (l *lecteur) adresseHTTPS(nom, defaut string) string {
 	return l.adresseHTTPSValeur(nom, v)
 }
 
+// chaineHTTPS lit une adresse https:// complète (chemin permis).
+func (l *lecteur) chaineHTTPS(nom, defaut string) string {
+	v := l.chaine(nom, defaut)
+	if u, err := url.Parse(v); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		l.erreur(nom, fmt.Errorf("vaut %q ; attendu une adresse https://", v))
+	}
+	return v
+}
+
 // adresseHTTPSValeur contrôle une adresse https:// sans chemin ni paramètres.
 func (l *lecteur) adresseHTTPSValeur(nom, v string) string {
 	v = strings.TrimRight(v, "/")
@@ -615,4 +666,36 @@ func (l *lecteur) prefixes(nom, defaut string) []string {
 		ps = append(ps, p)
 	}
 	return ps
+}
+
+// Volume décrit l'accès au KMS d'OVHcloud de « diguee cle-volume » (clé du
+// volume chiffré, ticket #7). Ces variables sont lues seules, sans le reste
+// de la configuration : la commande tourne au démarrage de la machine, avant
+// PostgreSQL, avec son propre fichier d'environnement (root seulement).
+type Volume struct {
+	PointAcces string        // DIGUEE_OVH_KMS_POINT_ACCES (le même KMS que l'empreinte)
+	ID         string        // DIGUEE_OVH_KMS_ID
+	CleID      string        // DIGUEE_OVH_KMS_VOLUME_CLE_ID : UUID de la clé symétrique du volume
+	Certificat string        // DIGUEE_OVH_KMS_VOLUME_CERTIFICAT : certificat client (PEM) de l'identité du volume
+	CleClient  string        // DIGUEE_OVH_KMS_VOLUME_CLE_CLIENT : sa clé privée (PEM), secret
+	AC         string        // DIGUEE_OVH_KMS_AC : facultatif
+	Delai      time.Duration // DIGUEE_KMS_DELAI : 5s
+}
+
+// ChargerVolume lit les variables de « diguee cle-volume ».
+func ChargerVolume(getenv func(string) string) (*Volume, error) {
+	l := lecteur{getenv: getenv}
+	v := &Volume{
+		PointAcces: l.adresseHTTPS("DIGUEE_OVH_KMS_POINT_ACCES", ""),
+		ID:         l.motif("DIGUEE_OVH_KMS_ID", motifUUID, "un UUID"),
+		CleID:      l.motif("DIGUEE_OVH_KMS_VOLUME_CLE_ID", motifUUID, "un UUID"),
+		Certificat: l.obligatoire("DIGUEE_OVH_KMS_VOLUME_CERTIFICAT"),
+		CleClient:  l.obligatoire("DIGUEE_OVH_KMS_VOLUME_CLE_CLIENT"),
+		AC:         l.chaine("DIGUEE_OVH_KMS_AC", ""),
+		Delai:      l.duree("DIGUEE_KMS_DELAI", "5s"),
+	}
+	if len(l.erreurs) > 0 {
+		return nil, errors.Join(l.erreurs...)
+	}
+	return v, nil
 }

@@ -245,3 +245,41 @@ func TestReglagesAncrage(t *testing.T) {
 		}
 	}
 }
+
+// TLS (ticket #7) : HTTP simple en développement, ACME en production.
+func TestTLS(t *testing.T) {
+	c, err := Charger(env(minimal()))
+	if err != nil || c.TLS.Mode != "non" || c.TLS.AdresseHTTPS != "" || c.PostgresURLMigrations != "" {
+		t.Fatalf("développement : %+v, %v", c.TLS, err)
+	}
+	m := minimal()
+	m["DIGUEE_ENV"] = "production"
+	m["DIGUEE_POSTGRES_URL_MIGRATIONS"] = "postgres://proprietaire@localhost/diguee"
+	c, err = Charger(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TLS != (TLS{Mode: "acme", AdresseHTTPS: ":443", AdresseHTTP: ":80", Cache: "/srv/diguee-donnees/diguee/acme",
+		Annuaire: "https://acme-v02.api.letsencrypt.org/directory"}) || c.PostgresURLMigrations != m["DIGUEE_POSTGRES_URL_MIGRATIONS"] {
+		t.Errorf("production : %+v", c.TLS)
+	}
+	m = minimal()
+	m["DIGUEE_TLS"] = "acme"
+	m["DIGUEE_ACME_ANNUAIRE"] = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	m["DIGUEE_ACME_COURRIEL"] = "technique@diguee.sn"
+	m["DIGUEE_ADRESSE_HTTPS"] = ":8443"
+	if c, err = Charger(env(m)); err != nil || c.TLS.Annuaire != m["DIGUEE_ACME_ANNUAIRE"] || c.TLS.AdresseHTTPS != ":8443" || c.TLS.Courriel == "" {
+		t.Errorf("réglages ACME : %+v, %v", c, err)
+	}
+	for k, v := range map[string]string{
+		"DIGUEE_TLS": "oui", "DIGUEE_ACME_ANNUAIRE": "http://acme.example/dir", "DIGUEE_ACME_COURRIEL": "personne",
+		"DIGUEE_URL_PUBLIQUE": "https://consultation.diguee.sn:8443",
+	} {
+		m := minimal()
+		m["DIGUEE_TLS"] = "acme"
+		m[k] = v
+		if _, err := Charger(env(m)); err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("%s=%s accepté : %v", k, v, err)
+		}
+	}
+}

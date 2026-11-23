@@ -1,0 +1,48 @@
+#!/usr/sbin/nft -f
+# Pare-feu local de Diguee (défense en profondeur, en plus du pare-feu
+# réseau d'OVHcloud) : en entrée, seuls 80 et 443 pour tous, et SSH depuis
+# les adresses autorisées ; aucun journal des paquets refusés (aucune IP
+# écrite). Produit par preparer-vps.sh depuis ce modèle : @SSH_V4@ et
+# @SSH_V6@ sont remplacés par les adresses autorisées.
+flush ruleset
+
+table inet diguee {
+	set ssh_v4 {
+		type ipv4_addr
+		flags interval
+@SSH_V4@
+	}
+
+	set ssh_v6 {
+		type ipv6_addr
+		flags interval
+@SSH_V6@
+	}
+
+	chain entree {
+		type filter hook input priority filter; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+		iif "lo" accept
+		# ICMP utile (MTU, erreurs, ping limité) ; découverte de voisins IPv6.
+		ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
+		ip6 nexthdr icmpv6 icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+		ip6 nexthdr icmpv6 icmpv6 type echo-request limit rate 10/second accept
+		# Client DHCP (adresse du VPS).
+		udp sport 67 udp dport 68 accept
+		ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept
+		# Le site : HTTPS, et HTTP pour la redirection et le défi ACME.
+		tcp dport { 80, 443 } accept
+		# Administration.
+		tcp dport 22 ip saddr @ssh_v4 accept
+		tcp dport 22 ip6 saddr @ssh_v6 accept
+	}
+
+	chain transfert {
+		type filter hook forward priority filter; policy drop;
+	}
+
+	chain sortie {
+		type filter hook output priority filter; policy accept;
+	}
+}
