@@ -20,9 +20,10 @@ Site : https://diguee.sn · Contact : @digueeboorla
 | `internal/tampon` | Tampon mélangé (ADR 0003) : écriture groupée à 20 envois, à 30 minutes et à l'arrêt, doublons refusés |
 | `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` |
 | `internal/base` | PostgreSQL : connexion, migrations (`migrations/NNNN_nom.sql`), requêtes ; `basetest` pour les tests |
+| `internal/journal` | Journal public (ADR 0010) : entrées chaînées par SHA-256 sur le JSON canonique (RFC 8785, entiers seulement), API d'écriture `Inscrire` / `InscrireMiseEnProduction`, export JSON et vérification de la chaîne ; `journaltest` : magasin en mémoire pour les tests |
 | `internal/i18n` | Catalogues de textes : `fr` livré, `wo` et `ff` prévus |
-| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité), feuille de style et polices auto-hébergées |
-| `internal/version` | Version et SHA-256 de l'exécutable, affichés au pied de page |
+| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité, journal public `/journal` et son export `/journal.json`), feuille de style et polices auto-hébergées |
+| `internal/version` | Version et SHA-256 de l'exécutable, affichés au pied de page et inscrits au journal public à chaque mise en production |
 | `docs/` | Spécification, ADR, et [ce que le porteur doit fournir](docs/À%20faire%20par%20le%20porteur.md) |
 
 ## Développement
@@ -50,9 +51,22 @@ go vet ./... && go test ./...
 make verifier-build
 ```
 
-Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`). En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
+Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`), comme l'unique entrée « mise en production » sur plusieurs redémarrages. T11 (modification d'une entrée ancienne détectée) est testé dans `internal/journal` et sur la commande `verifier-journal` ; le refus d'`UPDATE`/`DELETE` en SQL dans `internal/base/journal_test.go`. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
 
-Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`.
+Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`, et `diguee verifier-journal` (ci-dessous).
+
+### Journal public
+
+Chaque entrée de `journal_public` contient un numéro, un horodatage à la minute (UTC), un type, un contenu (objet JSON d'agrégats seulement) et l'empreinte de l'entrée précédente ; son empreinte est le SHA-256 du JSON canonique (RFC 8785, entiers seulement) de ces cinq champs, la première ayant une empreinte précédente nulle. La base refuse `UPDATE`, `DELETE` et `TRUNCATE` sur la table, pour tous les rôles (déclencheurs de la migration `0002`), et refuse une insertion qui ne suit pas la dernière entrée. Les écritures sont sérialisées par un verrou consultatif. Au démarrage du serveur, une entrée « mise en production » (version et SHA-256 de l'exécutable) est inscrite si la dernière entrée de ce type ne porte pas déjà ces valeurs. Les autres types (publication quotidienne, statut publié, droit de réponse, méthodologie, ouverture, clôture, procès-verbal) sont écrits par les tickets suivants avec `journal.Journal.Inscrire`. Aucune entrée n'est écrite à cause d'un envoi : l'heure d'une entrée ne doit rien dire de celle d'une réponse.
+
+Vérifier un export, sans configuration ni base :
+
+```sh
+go run github.com/2guntan/diguee/cmd/diguee@latest verifier-journal journal.json   # ou https://…/journal.json
+# Détecter aussi une réécriture complète de la chaîne : une empreinte publiée
+# hors de nos serveurs, ou un export téléchargé plus tôt
+diguee verifier-journal -attendu <empreinte> -precedent ancien.json journal.json
+```
 
 **Build reproductible** : `make build` compile avec `CGO_ENABLED=0 -trimpath -buildid=`, et fixe la version avec `git describe`. Le même commit, compilé avec la même version de Go pour le même système (`GOOS`/`GOARCH`), donne le même SHA-256, qui est affiché au pied de chaque page.
 
@@ -92,4 +106,4 @@ Avec `DIGUEE_ENV=production`, le serveur refuse de démarrer si une valeur vaut 
 
 ### Règles
 
-Voir `CLAUDE.md` : textes visibles uniquement dans `internal/i18n/catalogues/fr.json` (un test l'impose), aucun numéro, IP ni corps de requête dans les journaux, pages de moins de 100 Ko sans script.
+Voir `CLAUDE.md` : textes visibles uniquement dans `internal/i18n/catalogues/fr.json` (un test l'impose), aucun numéro, IP ni corps de requête dans les journaux, pages de moins de 100 Ko sans script (`/journal` est paginé par 50 entrées), aucune entrée du journal public déclenchée par un envoi.

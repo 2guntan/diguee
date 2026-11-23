@@ -82,6 +82,13 @@ Valeurs qui ont un défaut tiré de la spec, à confirmer si besoin : `DIGUEE_AL
 
 Secret à fournir en production : `DIGUEE_POSTGRES_URL`, l'adresse de la base avec son mot de passe (ticket #7), à mettre dans le fichier d'environnement de systemd, jamais dans le dépôt.
 
+### 2.1 Journal public (ticket #3) : points à valider
+
+- **Rôle SQL en production (ticket #7)** : la base refuse `UPDATE`, `DELETE` et `TRUNCATE` sur le journal pour tous les rôles, propriétaire compris. Mais le propriétaire de la table peut désactiver ces déclencheurs. Aujourd'hui, le serveur applique lui-même les migrations, donc il est propriétaire. Recommandation pour le ticket #7 : un rôle propriétaire réservé à `diguee migrer`, et un rôle d'application qui n'a que `SELECT` et `INSERT` sur `journal_public` (le verrou d'écriture est consultatif et ne demande aucun autre droit). Cela suppose que `diguee` (servir) n'applique plus les migrations en production.
+- **Exception à T1** : la spec §10 exige un horodatage à la minute dans le journal, alors que T1 interdit tout horodatage plus fin que le jour dans un `pg_dump`. Le test T1 exclut donc la seule table `journal_public`, et vérifie que les envois n'y écrivent rien. À confirmer.
+- **Ancrage extérieur** : OpenTimestamps, archive.org et le texte hebdomadaire pour X arrivent au ticket #12. D'ici là, seule la chaîne interne et la comparaison avec un export ou une empreinte gardés à part détectent une réécriture.
+- La commande publiée `go run github.com/2guntan/diguee/cmd/diguee@latest verifier-journal …` suppose que le dépôt soit public (ADR 0010).
+
 ## 3. Actions humaines prévues
 
 - Recopier `site/index.html` (FAQ corrigée) dans `public_html/` chez PlanetHoster.
@@ -100,3 +107,4 @@ Mis à jour à la fin de chaque ticket : ce qui est fait, et les éventuelles va
 |---|---|---|
 | #1 | fait | Squelette Go : accueil (question clé, compteur lu en base), Méthodologie et Politique de confidentialité avec la configuration réelle, catalogues `fr` (livré), `wo` et `ff` (prévus), migrations, garde de production et registre des intégrations, build reproductible (version et SHA-256 au pied de page), CI GitHub Actions. Valeurs provisoires ajoutées : `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE`, `DIGUEE_CONTACT`, `DIGUEE_NUMERO_CDP`, `DIGUEE_NUMERO_WHATSAPP`, `DIGUEE_OUVERTURE` ; défaut provisoire `DIGUEE_ALTCHA_DIFFICULTE`. Aucune fausse implémentation pour l'instant. |
 | #2 | fait | Parcours de réponse de bout en bout, sans JavaScript : accueil (bouton « Répondre à la consultation » pendant l'ouverture), vérification factice (développement seulement), questionnaire v1 (Q1 à Q8, profil, « 18 ans ou plus » obligatoire), récapitulatif « définitive », envoi, merci. Tampon mélangé en mémoire (`DIGUEE_TAMPON_TAILLE`, `DIGUEE_TAMPON_DELAI`, écriture à l'arrêt), deux tables sans lien, identifiants aléatoires, jour seulement, doublon refusé en base et dans le tampon. Sessions en mémoire. Fausse implémentation ajoutée : `DIGUEE_EMPREINTEUR=fake` (remplacée par `ovh` au ticket #5). Valeurs provisoires ajoutées : échelles de Q1 et Q2, choix de Q5 (marque `Provisoire`, bloquante en production), choix du critère « sexe » à confirmer. |
+| #3 | fait | Journal public chaîné (SHA-256 du JSON canonique RFC 8785), en ajout seul jusque dans la base (déclencheurs : `UPDATE`, `DELETE`, `TRUNCATE` refusés, insertion hors chaîne refusée), page `/journal` paginée et export `/journal.json`, commande `diguee verifier-journal <fichier|url>` (options `-attendu` et `-precedent`), API d'écriture pour les tickets suivants, entrée « mise en production » automatique au démarrage sur une nouvelle version. Aucune fausse implémentation ni valeur provisoire ajoutée ; points à valider en §2.1. |

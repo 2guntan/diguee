@@ -567,6 +567,17 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 		}
 	}
 	donnees := regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")
+	// Seule exception : la table du journal public (spec §10), horodatée à la
+	// minute parce que ses entrées sont publiques. Les envois n'y écrivent
+	// rien : l'heure d'une entrée ne peut pas dater une réponse.
+	reJournal := regexp.MustCompile(`(?s)CREATE TABLE \S+\.journal_public \(.*?\n\);\n`)
+	if n := len(reJournal.FindAllString(donnees, -1)); n != 1 {
+		t.Errorf("table journal_public trouvée %d fois dans le dump", n)
+	}
+	donnees = reJournal.ReplaceAllString(donnees, "")
+	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 0 {
+		t.Errorf("les envois ont écrit %d entrée(s) au journal public", len(lj))
+	}
 	for _, motif := range []string{`\d{1,2}:\d{2}`, `(?i)\btimestamp`, `(?i)\btime\b`, `(?i)\binterval\b`, `(?i)\bserial\b`, `(?i)nextval`} {
 		if m := regexp.MustCompile(motif).FindString(donnees); m != "" {
 			t.Errorf("dump : horodatage ou séquence %q", m)

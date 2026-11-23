@@ -1,0 +1,39 @@
+{{define "titre"}}{{t "journal.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "journal.titre"}}</h1>
+    <p class="lead">{{t "journal.chapeau"}}</p>
+    <p>{{t "journal.anonymat"}}</p>
+    {{with .Journal}}
+    {{if .Nombre}}<p>{{tf "journal.tete" (nombre .Nombre)}}<br><code class="empreinte">{{.Tete}}</code></p>{{else}}<p>{{t "journal.vide"}}</p>{{end}}
+    <p><a class="btn secondaire" href="/journal.json" download="journal.json">{{t "journal.export"}}</a></p>
+
+    <h2>{{t "journal.verifier.titre"}}</h2>
+    <p>{{t "journal.verifier.chaine"}}</p>
+    <pre class="commande"><code>{{.Commande}}</code></pre>
+    <p>{{t "journal.verifier.ancrage"}}</p>
+
+    {{if .Entrees}}
+    <h2>{{t "journal.entrees.titre"}}</h2>
+    {{range .Entrees}}
+    <article class="entree" id="entree-{{.Numero}}">
+      <h3><span class="muted">{{tf "journal.entree.numero" (nombre .Numero)}}</span> · {{if .CleType}}{{t .CleType}}{{else}}{{.Type}}{{end}}</h3>
+      <p class="muted"><time datetime="{{.HorodatageISO}}">{{dateheure .Horodatage}}</time></p>
+      {{if .Champs}}<dl class="params">
+        {{range .Champs}}<div><dt>{{if .Cle}}{{t .Cle}}{{else}}{{.Nom}}{{end}}</dt><dd>{{if .Code}}<code class="empreinte">{{.Valeur}}</code>{{else}}{{.Valeur}}{{end}}</dd></div>
+        {{end}}
+      </dl>{{end}}
+      <p class="empreintes">{{t "journal.entree.precedente"}} <code class="empreinte">{{.Precedente}}</code><br>{{t "journal.entree.empreinte"}} <code class="empreinte">{{.Empreinte}}</code></p>
+    </article>
+    {{end}}
+    {{if gt .Pages 1}}<nav class="pagination" aria-label="{{t "journal.page.libelle"}}">
+      {{if .Recentes}}<a href="/journal?page={{.Recentes}}">{{t "journal.page.recentes"}}</a>{{end}}
+      <span>{{tf "journal.page.position" (nombre .Page) (nombre .Pages)}}</span>
+      {{if .Anciennes}}<a href="/journal?page={{.Anciennes}}">{{t "journal.page.anciennes"}}</a>{{end}}
+    </nav>{{end}}
+    {{end}}
+    {{end}}
+  </div>
+</section>
+{{end}}

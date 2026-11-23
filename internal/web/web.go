@@ -19,6 +19,7 @@ import (
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/tampon"
@@ -32,7 +33,7 @@ var fichiersStatiques embed.FS
 
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
-	"verifier", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree"}
+	"verifier", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -52,6 +53,9 @@ type Options struct {
 	SHA256     string
 	Journal    *slog.Logger
 	Maintenant func() time.Time // time.Now par défaut
+
+	// JournalPublic sert /journal et /journal.json s'il est fourni.
+	JournalPublic *journal.Journal
 
 	// Parcours de réponse : servi seulement si tous ces champs sont remplis.
 	Empreinteur   empreinte.Empreinteur
@@ -105,6 +109,10 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /methodologie", s.page("methodologie"))
 	s.mux.HandleFunc("GET /confidentialite", s.page("confidentialite"))
 	s.mux.HandleFunc("GET /sante", s.sante)
+	if opt.JournalPublic != nil {
+		s.mux.HandleFunc("GET /journal", s.journalPage)
+		s.mux.HandleFunc("GET /journal.json", s.journalExport)
+	}
 	s.mux.HandleFunc("GET /verifier", s.ouvert(s.verifierPage))
 	s.mux.HandleFunc("POST /verifier", s.ouvert(s.verifierNumero))
 	s.mux.HandleFunc("GET /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
@@ -149,6 +157,8 @@ type Donnees struct {
 	MajeurCoche  bool
 	MajeurErreur string
 	Caches       []Cache // champs cachés du récapitulatif
+
+	Journal *VueJournal // page /journal
 }
 
 func (s *Serveur) donnees() Donnees {
@@ -238,6 +248,10 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 		"nombre":  func(n any) string { return c.Nombre(entier(n)) },
 		"duree":   c.Duree,
 		"heure":   c.Heure,
+		"dateheure": func(t time.Time) string {
+			t = t.UTC()
+			return c.F("format.date_heure", c.Date(t), c.Heure(time.Duration(t.Hour())*time.Hour+time.Duration(t.Minute())*time.Minute))
+		},
 		"jour": func(d config.Date) string {
 			if d.Provisoire() {
 				return config.ACompleter

@@ -4,6 +4,8 @@
 //	diguee migrer           applique les migrations puis s'arrête
 //	diguee verifier-config  affiche ce qui manque pour la production
 //	diguee version          affiche la version et le SHA-256 de l'exécutable
+//	diguee verifier-journal [-attendu EMPREINTE]... [-precedent ANCIEN] <fichier.json|url>
+//	                        vérifie un export du journal public (sans configuration ni base)
 package main
 
 import (
@@ -25,6 +27,7 @@ import (
 	"github.com/2guntan/diguee/internal/garde"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
+	journalpublic "github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/tampon"
@@ -33,6 +36,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "verifier-journal" {
+		if err := verifierJournal(context.Background(), os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	journal := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if err := lancer(os.Args[1:], journal); err != nil {
 		journal.Error(err.Error())
@@ -114,7 +124,20 @@ func lancer(args []string, journal *slog.Logger) error {
 		return nil
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, verifier-config, version)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, verifier-config, version, verifier-journal)", commande)
+	}
+
+	// Journal public : une entrée « mise en production » à chaque démarrage sur
+	// une nouvelle version (ou un nouvel exécutable), aucune sur un simple
+	// redémarrage. Sans elle, le serveur ne démarre pas.
+	jp := journalpublic.Nouveau(b, nil)
+	mep, inscrite, err := jp.InscrireMiseEnProduction(ctx, version.Version(), sha)
+	if err != nil {
+		return err
+	}
+	if inscrite {
+		journal.Info("mise en production inscrite au journal public", "entree", mep.Numero,
+			"version", version.Version(), "sha256", sha)
 	}
 
 	catalogues, err := i18n.Charger()
@@ -127,7 +150,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
 	})
 	srv, err := web.Nouveau(web.Options{
-		Config: cfg, Catalogues: catalogues, Compteur: b,
+		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: session.NouveauMagasin(), Questionnaire: q,
 		// Seule la vérification factice existe pour l'instant (tickets #5, #6,

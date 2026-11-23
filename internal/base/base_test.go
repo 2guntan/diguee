@@ -50,12 +50,15 @@ func TestMigrerPuisCompter(t *testing.T) {
 	}
 }
 
+// Seule exception : l'horodatage à la minute du journal public (spec §10), dont
+// les entrées sont publiques et jamais écrites à cause d'un envoi.
 func TestSchemaSansHorodatage(t *testing.T) {
 	ctx := context.Background()
 	b := basetest.Ouvrir(t)
 	rows, err := b.Pool.Query(ctx, `SELECT table_name, column_name FROM information_schema.columns
 		WHERE table_schema = current_schema()
-		  AND (data_type LIKE 'timestamp%' OR data_type LIKE 'time%' OR column_default LIKE 'nextval%')`)
+		  AND (data_type LIKE 'timestamp%' OR data_type LIKE 'time%' OR column_default LIKE 'nextval%')
+		  AND NOT (table_name = 'journal_public' AND column_name = 'horodatage')`)
 	if err != nil {
 		t.Fatal(err)
 	}

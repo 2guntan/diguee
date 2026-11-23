@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/2guntan/diguee/internal/base/basetest"
+	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/version"
 )
 
 func valeursCompletes(t *testing.T) {
@@ -58,35 +62,12 @@ func adresseLibre(t *testing.T) string {
 func TestSIGTERMEcritLeTampon(t *testing.T) {
 	b, sc := basetest.OuvrirSchema(t)
 	valeursCompletes(t)
-	adresse := adresseLibre(t)
 	t.Setenv("DIGUEE_POSTGRES_URL", sc.URL)
-	t.Setenv("DIGUEE_ADRESSE", adresse)
 	t.Setenv("DIGUEE_TAMPON_TAILLE", "20")
 	t.Setenv("DIGUEE_TAMPON_DELAI", "30m")
 
-	fin := make(chan error, 1)
-	go func() { fin <- lancer(nil, silencieux()) }()
-
-	racine := "http://" + adresse
+	racine, arreter := demarrer(t)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	pret := false
-	for range 100 {
-		if res, err := client.Get(racine + "/sante"); err == nil {
-			res.Body.Close()
-			pret = res.StatusCode == http.StatusOK
-			if pret {
-				break
-			}
-		}
-		select {
-		case err := <-fin:
-			t.Fatalf("le serveur s'est arrêté : %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	if !pret {
-		t.Fatal("le serveur n'a pas démarré")
-	}
 
 	// Un envoi complet, qui reste dans le tampon (taille 20, délai 30 min).
 	res, err := client.PostForm(racine+"/verifier", url.Values{"numero": {"77 765 43 21"}})
@@ -126,18 +107,114 @@ func TestSIGTERMEcritLeTampon(t *testing.T) {
 		t.Fatalf("rien ne doit être écrit avant l'arrêt : %d, %d", np, nr)
 	}
 
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-fin:
-		if err != nil {
-			t.Fatalf("arrêt : %v", err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("le serveur ne s'est pas arrêté")
+	if err := arreter(); err != nil {
+		t.Fatalf("arrêt : %v", err)
 	}
 	if np, nr := compter(); np != 1 || nr != 1 {
 		t.Fatalf("le tampon devrait être écrit à l'arrêt : %d participation(s), %d réponse(s)", np, nr)
+	}
+}
+
+// demarrer lance le serveur (variables d'environnement déjà fixées, sauf
+// l'adresse) et attend qu'il réponde. arreter lui envoie SIGTERM et renvoie
+// son erreur de sortie.
+func demarrer(t *testing.T) (racine string, arreter func() error) {
+	t.Helper()
+	adresse := adresseLibre(t)
+	t.Setenv("DIGUEE_ADRESSE", adresse)
+	fin := make(chan error, 1)
+	go func() { fin <- lancer(nil, silencieux()) }()
+	racine = "http://" + adresse
+	pret := false
+	for range 100 {
+		if res, err := http.Get(racine + "/sante"); err == nil {
+			res.Body.Close()
+			pret = res.StatusCode == http.StatusOK
+			if pret {
+				break
+			}
+		}
+		select {
+		case err := <-fin:
+			t.Fatalf("le serveur s'est arrêté : %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !pret {
+		t.Fatal("le serveur n'a pas démarré")
+	}
+	return racine, func() error {
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+			return err
+		}
+		select {
+		case err := <-fin:
+			return err
+		case <-time.After(20 * time.Second):
+			return errors.New("le serveur ne s'est pas arrêté")
+		}
+	}
+}
+
+// Un démarrage sur une nouvelle version inscrit exactement une entrée « mise
+// en production » ; un redémarrage sur la même version n'en inscrit pas.
+func TestMiseEnProductionAuDemarrage(t *testing.T) {
+	b, sc := basetest.OuvrirSchema(t)
+	valeursCompletes(t)
+	t.Setenv("DIGUEE_POSTGRES_URL", sc.URL)
+	ctx := context.Background()
+	jp := journal.Nouveau(b, nil)
+	sha, err := version.SHA256Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var export string
+	for i := range 3 {
+		racine, arreter := demarrer(t)
+		if i == 2 {
+			res, err := http.Get(racine + "/journal.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			corps, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			export = string(corps)
+			if res, err := http.Get(racine + "/journal"); err != nil || res.StatusCode != http.StatusOK {
+				t.Fatalf("/journal : %v", err)
+			} else {
+				res.Body.Close()
+			}
+		}
+		if err := arreter(); err != nil {
+			t.Fatalf("arrêt %d : %v", i, err)
+		}
+	}
+	es, err := jp.Toutes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 1 || es[0].Type != journal.MiseEnProduction {
+		t.Fatalf("%d entrées, une seule mise en production attendue : %+v", len(es), es)
+	}
+	var c journal.ContenuMiseEnProduction
+	if err := json.Unmarshal(es[0].Contenu, &c); err != nil || c.Version != version.Version() || c.SHA256Executable != sha {
+		t.Errorf("contenu %s (version %s, sha %s)", es[0].Contenu, version.Version(), sha)
+	}
+	if _, rap, err := journal.LireExport(strings.NewReader(export)); err != nil || rap.Entrees != 1 {
+		t.Errorf("export servi : %v, %+v", err, rap)
+	}
+
+	// Une autre version est déployée entre-temps (simulée), puis celle-ci
+	// revient : nouvelle entrée.
+	if _, ins, err := jp.InscrireMiseEnProduction(ctx, "autre-version", strings.Repeat("0", 64)); err != nil || !ins {
+		t.Fatal(err)
+	}
+	_, arreter := demarrer(t)
+	if err := arreter(); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := jp.Compter(ctx); n != 3 {
+		t.Errorf("%d entrées, 3 attendues", n)
 	}
 }
