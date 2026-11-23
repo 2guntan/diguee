@@ -25,6 +25,7 @@ import (
 	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/sms"
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/whatsapp"
 )
@@ -38,7 +39,7 @@ var fichiersStatiques embed.FS
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
 	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal",
-	"sans_javascript", "verifier_sms", "verifier_code", "verifier_code_saisie"}
+	"sans_javascript", "verifier_sms_suspendu", "verifier_code", "verifier_code_saisie", "dev_sms"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -106,6 +107,18 @@ type Options struct {
 	// envoie par WhatsApp.Envoyeur et partage la limite par empreinte de
 	// la vérification inversée.
 	Codes *codes.Verificateur
+	// Code par SMS, en dernier recours (spec §5.3, ticket #10), servi sous
+	// /verifier/sms si SMS et CodesSMS sont fournis. CodesSMS porte les
+	// limites du SMS (limite par empreinte propre au canal, en plus de la
+	// limite partagée, essais) et son coupe-circuit. La limite par adresse
+	// du SMS est construite d'après DIGUEE_SMS_IP_PAR_HEURE si
+	// RalentisseurSMS est nil ; le quota des demandes sans captcha (sans
+	// JavaScript), d'après DIGUEE_SMS_SANS_JS_PAR_HEURE et
+	// DIGUEE_SMS_SANS_JS_IP_PAR_HEURE. En mode « fake », la page /dev/sms
+	// montre le dernier code ; elle n'existe jamais en production.
+	SMS             *sms.Integration
+	CodesSMS        *codes.Verificateur
+	RalentisseurSMS *antifraude.Ralentisseur
 }
 
 // Serveur sert les pages publiques.
@@ -114,6 +127,9 @@ type Serveur struct {
 	gabarits map[string]*template.Template
 	mux      *http.ServeMux
 	webhook  http.Handler
+
+	codeWhatsApp *canalCode // nil si le code par WhatsApp n'est pas servi
+	sms          *canalCode // nil si le code par SMS n'est pas servi
 }
 
 // Nouveau prépare les gabarits et les routes.
@@ -135,7 +151,39 @@ func Nouveau(opt Options) (*Serveur, error) {
 	if opt.WhatsApp != nil && opt.WhatsApp.Fausse() && opt.Config.Env == config.Production {
 		return nil, fmt.Errorf("la simulation WhatsApp (DIGUEE_WHATSAPP=fake) est interdite en production")
 	}
+	if opt.SMS != nil && opt.SMS.Fausse() && opt.Config.Env == config.Production {
+		return nil, fmt.Errorf("la console des codes SMS (DIGUEE_SMS=fake) est interdite en production")
+	}
 	s := &Serveur{opt: opt, gabarits: map[string]*template.Template{}, mux: http.NewServeMux()}
+	if opt.Codes != nil {
+		s.codeWhatsApp = &canalCode{codes: opt.Codes, ralentisseur: opt.Ralentisseur, vue: VueCanal{
+			Chemin: "/verifier/code", Saisie: "/verifier/code/saisie",
+			Titre: "code.titre", Principe: "code.principe", Meta: "code.meta",
+			Consigne: "code.saisie.consigne", Libelle: "code.saisie.libelle", ErreurEnvoi: "code.erreur.envoi",
+		}}
+		if opt.WhatsApp != nil && opt.WhatsApp.Fausse() {
+			s.codeWhatsApp.vue.Dev = "/dev/whatsapp"
+		}
+	}
+	if opt.SMS != nil && opt.CodesSMS != nil {
+		if opt.RalentisseurSMS == nil {
+			opt.RalentisseurSMS = antifraude.NouveauRalentisseur(antifraude.OptionsRalentisseur{
+				ParHeure: opt.Config.SMSIPParHeure, Maintenant: opt.Maintenant, Journal: opt.Journal,
+			})
+			s.opt.RalentisseurSMS = opt.RalentisseurSMS
+		}
+		s.sms = &canalCode{codes: opt.CodesSMS, ralentisseur: opt.RalentisseurSMS,
+			sansJS: nouveauQuotaSansJS(opt.Config.SMSSansJSIPParHeure, opt.Config.SMSSansJSParHeure, opt.Maintenant, opt.Journal),
+			vue: VueCanal{SMS: true,
+				Chemin: "/verifier/sms", Saisie: "/verifier/sms/saisie",
+				Titre: "sms.titre", Principe: "sms.principe", Meta: "sms.meta",
+				Consigne: "sms.saisie.consigne", Libelle: "sms.saisie.libelle", ErreurEnvoi: "sms.erreur.envoi",
+			}}
+		if c, ok := opt.SMS.Envoyeur.(*codes.Console); ok {
+			s.sms.console = c
+			s.sms.vue.Dev = "/dev/sms"
+		}
+	}
 	for _, p := range pages {
 		// Les fonctions sont remplacées à chaque requête par celles de la langue
 		// choisie ; celles-ci ne servent qu'à l'analyse.
@@ -185,14 +233,19 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("POST /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("GET /verifier/etat", s.ouvert(s.etatJeton))
-	if opt.Codes != nil {
-		s.mux.HandleFunc("GET /verifier/code", s.ouvert(s.codePage))
-		s.mux.HandleFunc("POST /verifier/code", s.ouvert(s.demanderCode))
-		s.mux.HandleFunc("GET /verifier/code/saisie", s.ouvert(s.saisieCode))
-		s.mux.HandleFunc("POST /verifier/code/saisie", s.ouvert(s.saisieCode))
+	for _, c := range []*canalCode{s.codeWhatsApp, s.sms} {
+		if c == nil {
+			continue
+		}
+		s.mux.HandleFunc("GET "+c.vue.Chemin, s.ouvert(s.codePage(c)))
+		s.mux.HandleFunc("POST "+c.vue.Chemin, s.ouvert(s.demanderCode(c)))
+		s.mux.HandleFunc("GET "+c.vue.Saisie, s.ouvert(s.saisieCode(c)))
+		s.mux.HandleFunc("POST "+c.vue.Saisie, s.ouvert(s.saisieCode(c)))
+	}
+	if s.sms != nil && s.sms.console != nil {
+		s.mux.HandleFunc("GET /dev/sms", s.devSMS)
 	}
 	s.mux.HandleFunc("GET /verifier/sans-javascript", s.ouvert(s.page("sans_javascript")))
-	s.mux.HandleFunc("GET /verifier/sms", s.ouvert(s.page("verifier_sms")))
 	s.mux.HandleFunc("GET /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
 	s.mux.HandleFunc("POST /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
 	s.mux.HandleFunc("POST /questionnaire/recapitulatif", s.ouvert(s.avecSession(s.recapitulatif)))
@@ -247,6 +300,8 @@ type Donnees struct {
 
 	// Code de secours.
 	CodeSecours bool          // le parcours du code par WhatsApp est servi
+	SMSSecours  bool          // le parcours du code par SMS est servi
+	Canal       *VueCanal     // pages du code : le canal (WhatsApp ou SMS)
 	Essais      int           // essais restants pour le code en cours
 	DureeCode   time.Duration // validité d'un code
 	CodeDev     string        // page de simulation : dernier code écrit dans la console
@@ -262,7 +317,8 @@ func (s *Serveur) donnees() Donnees {
 		SHA256:      s.opt.SHA256,
 		Parcours:    s.parcoursActif(),
 		Simulation:  s.opt.WhatsApp != nil && s.opt.WhatsApp.Fausse(),
-		CodeSecours: s.opt.Codes != nil,
+		CodeSecours: s.codeWhatsApp != nil,
+		SMSSecours:  s.sms != nil,
 		DureeCode:   s.opt.Config.CodeDuree,
 	}
 }

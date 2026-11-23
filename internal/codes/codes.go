@@ -48,8 +48,9 @@ const Chiffres = 6
 // aucun secret d'accès). Elle respecte l'échéance de ctx.
 //
 // Implémentations : whatsapp.EnvoyeurMeta (modèle d'authentification de
-// l'API Cloud), Console (développement) ; le ticket #10 y ajoutera le
-// fournisseur SMS.
+// l'API Cloud) et Console (développement, WhatsApp et SMS). Le fournisseur
+// SMS n'est pas encore choisi (ADR 0004) : son adaptateur implémentera
+// cette interface et sera choisi par DIGUEE_SMS (paquet sms).
 type Envoyeur interface {
 	Envoyer(ctx context.Context, numero, code string) error
 }
@@ -69,6 +70,7 @@ const (
 	Verifiee                    // code juste, session vérifiée
 	DejaParticipe               // code juste, mais l'empreinte a déjà participé
 	SessionPerdue               // code juste, mais la session a disparu
+	Suspendu                    // canal suspendu par son coupe-circuit : aucun envoi
 )
 
 // Doublons dit si une empreinte a déjà participé (tampon.Tampon : base ou tampon).
@@ -87,6 +89,14 @@ type Limiteur interface {
 	Autoriser(e empreinte.Empreinte) bool
 }
 
+// Disjoncteur est le coupe-circuit d'un canal (antifraude.CoupeCircuit pour
+// le SMS) : Suspendu ne compte rien, Autoriser compte l'envoi qui va partir
+// et peut couper le circuit.
+type Disjoncteur interface {
+	Suspendu() bool
+	Autoriser() bool
+}
+
 // Surveillance reçoit les métriques agrégées (antifraude.Surveillance).
 type Surveillance interface {
 	Compter(dimension, valeur string)
@@ -98,12 +108,19 @@ const DimensionPrefixe = "prefixe"
 
 // Options regroupe les dépendances du vérificateur.
 type Options struct {
-	Canal        string // « WhatsApp » ou « SMS » : seulement pour les messages d'erreur
-	Envoyeur     Envoyeur
-	Empreinteur  empreinte.Empreinteur
-	Doublons     Doublons
-	Sessions     Sessions
-	Limiteur     Limiteur         // facultatif ; partagé avec la vérification inversée
+	Canal       string // « WhatsApp » ou « SMS » : seulement pour les messages d'erreur
+	Envoyeur    Envoyeur
+	Empreinteur empreinte.Empreinteur
+	Doublons    Doublons
+	Sessions    Sessions
+	Limiteur    Limiteur // facultatif ; partagé avec la vérification inversée et les autres canaux
+	// LimiteurCanal est une limite par empreinte propre au canal, plus
+	// stricte que Limiteur (SMS : DIGUEE_SMS_PAR_EMPREINTE_24H). Facultatif ;
+	// vérifié avant Limiteur, pour qu'un refus du canal n'entame pas la
+	// limite partagée.
+	LimiteurCanal Limiteur
+	// Disjoncteur coupe le canal en cas d'emballement (SMS). Facultatif.
+	Disjoncteur  Disjoncteur
 	Surveillance Surveillance     // facultatif : métriques par préfixe
 	Prefixes     []string         // DIGUEE_PREFIXES_AUTORISES
 	Duree        time.Duration    // DIGUEE_CODE_DUREE
@@ -140,6 +157,7 @@ type Metriques struct {
 	EchecsEnvoi    atomic.Int64
 	NumerosRefuses atomic.Int64
 	Limitees       atomic.Int64
+	Suspendus      atomic.Int64
 	Faux           atomic.Int64
 	Epuises        atomic.Int64
 	Expires        atomic.Int64
@@ -169,6 +187,14 @@ func Nouveau(opt Options) (*Verificateur, error) {
 // Metriques renvoie les compteurs.
 func (v *Verificateur) Metriques() *Metriques { return &v.m }
 
+// Suspendu dit si le canal est suspendu par son coupe-circuit.
+func (v *Verificateur) Suspendu() bool {
+	return v.opt.Disjoncteur != nil && v.opt.Disjoncteur.Suspendu()
+}
+
+// Essais renvoie le nombre d'essais permis pour un code.
+func (v *Verificateur) Essais() int { return v.opt.Essais }
+
 // Duree renvoie la validité d'un code.
 func (v *Verificateur) Duree() time.Duration { return v.opt.Duree }
 
@@ -196,15 +222,20 @@ func tirer() (string, error) {
 var ErrEnvoi = errors.New("envoi du code impossible")
 
 // Demander traite le numéro saisi pour la session : contrôle, empreinte,
-// limite par empreinte, puis tirage et envoi du code. Un code précédent de
-// la session est révoqué. Il renvoie Envoye, NumeroRefuse, PrefixeRefuse ou
-// Limitee ; une erreur si l'empreinte ne peut pas être calculée ou si
+// limites par empreinte, coupe-circuit, puis tirage et envoi du code. Un
+// code précédent de la session est révoqué. Il renvoie Envoye,
+// NumeroRefuse, PrefixeRefuse, Limitee ou Suspendu ; une erreur si l'empreinte ne peut pas être calculée ou si
 // l'envoi échoue (ErrEnvoi), sans citer le numéro.
 //
 // Le numéro n'est plus référencé au retour : seuls restent l'empreinte et
 // le HMAC du code.
 func (v *Verificateur) Demander(ctx context.Context, session, saisie string) (Statut, error) {
 	v.Oublier(session)
+	// Canal suspendu : rien n'est calculé ni compté.
+	if v.Suspendu() {
+		v.m.Suspendus.Add(1)
+		return Suspendu, nil
+	}
 	numero, err := empreinte.Normaliser(saisie, v.opt.Prefixes)
 	switch {
 	case errors.Is(err, empreinte.ErrPrefixe):
@@ -222,13 +253,20 @@ func (v *Verificateur) Demander(ctx context.Context, session, saisie string) (St
 		// « +221 » puis le préfixe autorisé : une valeur d'une liste fermée.
 		v.opt.Surveillance.Compter(DimensionPrefixe, numero[4:6])
 	}
-	if v.opt.Limiteur != nil && !v.opt.Limiteur.Autoriser(emp) {
+	if (v.opt.LimiteurCanal != nil && !v.opt.LimiteurCanal.Autoriser(emp)) ||
+		(v.opt.Limiteur != nil && !v.opt.Limiteur.Autoriser(emp)) {
 		v.m.Limitees.Add(1)
 		return Limitee, nil
 	}
 	code, err := tirer()
 	if err != nil {
 		return 0, err
+	}
+	// Dernier contrôle avant l'envoi : le coupe-circuit compte l'envoi, ou
+	// le refuse (et peut se déclencher sur celui-ci).
+	if v.opt.Disjoncteur != nil && !v.opt.Disjoncteur.Autoriser() {
+		v.m.Suspendus.Add(1)
+		return Suspendu, nil
 	}
 	if err := v.opt.Envoyeur.Envoyer(ctx, numero, code); err != nil {
 		v.m.EchecsEnvoi.Add(1)

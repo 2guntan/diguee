@@ -66,6 +66,7 @@ type Config struct {
 	KMSDelai    time.Duration // DIGUEE_KMS_DELAI : délai d'attente d'un appel au KMS, 5s
 	WhatsApp    string        // DIGUEE_WHATSAPP : fake (défaut, page de simulation) ou meta (API Cloud)
 	Meta        Meta          // réglages de DIGUEE_WHATSAPP=meta
+	SMS         string        // DIGUEE_SMS : fake (défaut, codes écrits dans la console) ; fournisseur à choisir (ADR 0004)
 
 	// CleTOTP chiffre les secrets TOTP de l'espace équipe (AES-256-GCM). Secret,
 	// 32 octets. Vide : clé de développement écrite dans le code, déclarée
@@ -95,8 +96,19 @@ type Config struct {
 	CodeEssais           int           // DIGUEE_CODE_ESSAIS : 5
 	VerifParEmpreinte24h int           // DIGUEE_VERIF_PAR_EMPREINTE_24H : 3
 	IPParHeure           int           // DIGUEE_IP_PAR_HEURE : 30
-	SMSCoupeCircuit      float64       // DIGUEE_SMS_COUPE_CIRCUIT : 3x
 	AltchaDifficulte     int           // DIGUEE_ALTCHA_DIFFICULTE : 100000
+
+	// Code par SMS (§5.3) : limites plus strictes que celles du WhatsApp,
+	// et coupe-circuit financier (ticket #10).
+	SMSParEmpreinte24h      int           // DIGUEE_SMS_PAR_EMPREINTE_24H : 2 (au plus DIGUEE_VERIF_PAR_EMPREINTE_24H)
+	SMSCodeEssais           int           // DIGUEE_SMS_CODE_ESSAIS : 3 (au plus DIGUEE_CODE_ESSAIS)
+	SMSIPParHeure           int           // DIGUEE_SMS_IP_PAR_HEURE : 10 (au plus DIGUEE_IP_PAR_HEURE)
+	SMSParHeure             int           // DIGUEE_SMS_PAR_HEURE : 100, plafond absolu horaire (coupe toujours)
+	SMSCoupeCircuit         float64       // DIGUEE_SMS_COUPE_CIRCUIT : 3x la moyenne horaire sur 7 jours
+	SMSCoupeCircuitPlancher int           // DIGUEE_SMS_COUPE_CIRCUIT_PLANCHER : 20 envois dans l'heure au moins
+	SMSReactivation         time.Duration // DIGUEE_SMS_REACTIVATION : 1h
+	SMSSansJSParHeure       int           // DIGUEE_SMS_SANS_JS_PAR_HEURE : 10 demandes sans captcha par heure, en tout
+	SMSSansJSIPParHeure     int           // DIGUEE_SMS_SANS_JS_IP_PAR_HEURE : 2 demandes sans captcha par heure et par adresse
 
 	// Tampon et publication (§6.2, §8).
 	SeuilPublication int           // DIGUEE_SEUIL_PUBLICATION : 1000
@@ -240,8 +252,18 @@ func Charger(getenv func(string) string) (*Config, error) {
 	c.CodeEssais = l.entier("DIGUEE_CODE_ESSAIS", 5)
 	c.VerifParEmpreinte24h = l.entier("DIGUEE_VERIF_PAR_EMPREINTE_24H", 3)
 	c.IPParHeure = l.entier("DIGUEE_IP_PAR_HEURE", 30)
-	c.SMSCoupeCircuit = l.multiplicateur("DIGUEE_SMS_COUPE_CIRCUIT", "3x")
 	c.AltchaDifficulte = l.entier("DIGUEE_ALTCHA_DIFFICULTE", 100000)
+
+	c.SMS = l.choix("DIGUEE_SMS", "fake", "fake")
+	c.SMSParEmpreinte24h = l.auPlus("DIGUEE_SMS_PAR_EMPREINTE_24H", 2, "DIGUEE_VERIF_PAR_EMPREINTE_24H", c.VerifParEmpreinte24h)
+	c.SMSCodeEssais = l.auPlus("DIGUEE_SMS_CODE_ESSAIS", 3, "DIGUEE_CODE_ESSAIS", c.CodeEssais)
+	c.SMSIPParHeure = l.auPlus("DIGUEE_SMS_IP_PAR_HEURE", 10, "DIGUEE_IP_PAR_HEURE", c.IPParHeure)
+	c.SMSParHeure = l.entier("DIGUEE_SMS_PAR_HEURE", 100)
+	c.SMSCoupeCircuit = l.multiplicateur("DIGUEE_SMS_COUPE_CIRCUIT", "3x")
+	c.SMSCoupeCircuitPlancher = l.entier("DIGUEE_SMS_COUPE_CIRCUIT_PLANCHER", 20)
+	c.SMSReactivation = l.duree("DIGUEE_SMS_REACTIVATION", "1h")
+	c.SMSSansJSParHeure = l.auPlus("DIGUEE_SMS_SANS_JS_PAR_HEURE", 10, "DIGUEE_SMS_PAR_HEURE", c.SMSParHeure)
+	c.SMSSansJSIPParHeure = l.auPlus("DIGUEE_SMS_SANS_JS_IP_PAR_HEURE", 2, "DIGUEE_SMS_IP_PAR_HEURE", c.SMSIPParHeure)
 
 	c.SeuilPublication = l.entier("DIGUEE_SEUIL_PUBLICATION", 1000)
 	c.SeuilCase = l.entier("DIGUEE_SEUIL_CASE", 30)
@@ -431,6 +453,17 @@ func (l *lecteur) entier(nom string, defaut int) int {
 	if err != nil || n <= 0 {
 		l.erreur(nom, fmt.Errorf("vaut %q ; attendu un entier positif", v))
 		return defaut
+	}
+	return n
+}
+
+// auPlus lit un entier positif qui ne doit pas dépasser la valeur d'une
+// autre variable : une limite du SMS reste au moins aussi stricte que celle
+// du WhatsApp.
+func (l *lecteur) auPlus(nom string, defaut int, autre string, plafond int) int {
+	n := l.entier(nom, defaut)
+	if n > plafond {
+		l.erreur(nom, fmt.Errorf("vaut %d ; ne doit pas dépasser %s (%d)", n, autre, plafond))
 	}
 	return n
 }

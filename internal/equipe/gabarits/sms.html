@@ -1,0 +1,31 @@
+{{define "titre"}}{{t "equipe.sms.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.sms.titre"}}</h1>
+    {{- if .Message}}
+    <p class="alerte" role="status">{{t .Message}}</p>
+    {{- end}}
+    <p>{{t "equipe.sms.chapeau"}}</p>
+    {{- with .SMS}}
+    {{- if .Suspendu}}
+    <p class="alerte" role="alert">{{t (printf "equipe.sms.suspendu.%s" .Raison)}}</p>
+    <dl class="params">
+      <div><dt>{{t "equipe.sms.depuis"}}</dt><dd>{{dateheure .Depuis}}</dd></div>
+      <div><dt>{{t "equipe.sms.jusqua"}}</dt><dd>{{dateheure .Jusqua}}</dd></div>
+    </dl>
+    <form class="formulaire" method="post" action="/equipe/sms/reactiver">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button class="btn" type="submit">{{t "equipe.sms.reactiver"}}</button>
+      <p class="aide">{{t "equipe.sms.reactiver.aide"}}</p>
+    </form>
+    {{- else}}
+    <p role="status">{{t "equipe.sms.actif"}}</p>
+    {{- end}}
+    <dl class="params">
+      <div><dt>{{t "equipe.sms.heure_courante"}}</dt><dd>{{nombre .HeureCourante}}</dd></div>
+      <div><dt>{{t "equipe.sms.moyenne"}}</dt><dd>{{printf "%.1f" .MoyenneHoraire}}</dd></div>
+      <div><dt>{{t "equipe.sms.historique"}}</dt><dd>{{.Heures}}</dd></div>
+      <div><dt>{{t "equipe.sms.regle"}}</dt><dd>{{tf "equipe.sms.regle.valeur" .Facteur .Plancher .PlafondHoraire (duree .Reactivation)}}</dd></div>
+      <div><dt>{{t "equipe.sms.declenchements"}}</dt><dd>{{nombre .Declenchements}}</dd></div>
+    </dl>
+    {{- end}}
+{{end}}

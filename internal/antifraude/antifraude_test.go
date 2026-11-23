@@ -264,3 +264,77 @@ func TestSurveillanceAttendUnHistorique(t *testing.T) {
 		t.Error("valeurs vides ou trop longues ignorées")
 	}
 }
+
+func nouveauCoupeCircuit(h *horloge, j *bytes.Buffer) *CoupeCircuit {
+	return NouveauCoupeCircuit(OptionsCoupeCircuit{Facteur: 3, Plancher: 20, PlafondHoraire: 100,
+		Reactivation: time.Hour, Maintenant: h.maintenant, Journal: slog.New(slog.NewJSONHandler(j, nil))})
+}
+
+// T14 : un pic au-delà de 3 fois la moyenne glissante coupe le circuit,
+// avec une alerte sans donnée ; tout envoi est ensuite refusé jusqu'à la
+// réactivation, automatique après le délai.
+func TestCoupeCircuitPic(t *testing.T) {
+	h := &horloge{t: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)}
+	j := &bytes.Buffer{}
+	c := nouveauCoupeCircuit(h, j)
+	// Au démarrage, sans historique, 99 envois passent (sous le plafond).
+	for i := range 99 {
+		if !c.Autoriser() {
+			t.Fatalf("envoi %d refusé sans historique", i)
+		}
+	}
+	h.avancer(time.Hour)
+	// 7 jours à 5 envois par heure : la première heure, à 99, sort de la
+	// moyenne glissante.
+	for range 7 * 24 {
+		for range 5 {
+			c.Autoriser()
+		}
+		h.avancer(time.Hour)
+	}
+	e := c.Etat()
+	if e.Suspendu || e.Heures != HistoriqueMax || e.MoyenneHoraire != 5 {
+		t.Fatalf("état : %+v", e)
+	}
+	// 3 × 5 = 15, mais le plancher est à 20 : 19 passent, puis le 20e coupe.
+	for i := range 19 {
+		if !c.Autoriser() {
+			t.Fatalf("envoi %d refusé sous le plancher", i)
+		}
+	}
+	if c.Autoriser() {
+		t.Fatal("le 20e envoi doit couper le circuit")
+	}
+	e = c.Etat()
+	if !e.Suspendu || e.Raison != RaisonPic || e.HeureCourante != 19 || e.Declenchements != 1 || !e.Jusqua.Equal(h.maintenant().Add(time.Hour)) {
+		t.Fatalf("état après coupure : %+v", e)
+	}
+	if !strings.Contains(j.String(), `"level":"WARN"`) || !strings.Contains(j.String(), `"raison":"pic"`) {
+		t.Fatalf("alerte : %s", j.String())
+	}
+	h.avancer(59 * time.Minute)
+	if c.Autoriser() || !c.Suspendu() {
+		t.Fatal("encore suspendu avant le délai")
+	}
+	h.avancer(time.Minute)
+	if c.Suspendu() || !c.Autoriser() {
+		t.Fatal("réactivation automatique attendue")
+	}
+}
+
+// Le plafond absolu coupe même sans historique ; la réactivation manuelle
+// referme le circuit.
+func TestCoupeCircuitPlafondEtReactivation(t *testing.T) {
+	h := &horloge{t: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)}
+	j := &bytes.Buffer{}
+	c := nouveauCoupeCircuit(h, j)
+	for range 100 {
+		c.Autoriser()
+	}
+	if c.Autoriser() || c.Etat().Raison != RaisonPlafond {
+		t.Fatalf("plafond : %+v", c.Etat())
+	}
+	if c.Reactiver() == false || c.Suspendu() || c.Reactiver() {
+		t.Fatal("réactivation manuelle")
+	}
+}

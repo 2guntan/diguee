@@ -12,7 +12,11 @@
 //     une même adresse, un délai croissant et borné, et une alerte, sans
 //     jamais bloquer (CGNAT des opérateurs) ;
 //   - Surveillance : métriques agrégées par préfixe et par région, avec une
-//     alerte en cas de pic anormal.
+//     alerte en cas de pic anormal ;
+//   - CoupeCircuit : coupe-circuit financier du parcours SMS (volume horaire
+//     au-delà de DIGUEE_SMS_COUPE_CIRCUIT fois la moyenne sur 7 jours, ou
+//     au-delà du plafond DIGUEE_SMS_PAR_HEURE), avec réactivation
+//     automatique ou manuelle.
 //
 // Rien de ce paquet n'est écrit en base. Ni adresse IP, ni numéro, ni
 // empreinte, ni HMAC d'adresse n'est journalisé.

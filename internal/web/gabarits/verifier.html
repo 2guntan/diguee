@@ -20,6 +20,9 @@
     {{- if .CodeSecours}}
     <p><a href="/verifier/code">{{t "code.lien"}}</a></p>
     {{- end}}
+    {{- if .SMSSecours}}
+    <p><a href="/verifier/sms">{{t "sms.lien"}}</a></p>
+    {{- end}}
     <p class="note">{{t "verif.captcha.explication"}}</p>
     <p class="note">{{t "verif.oubli"}}</p>
     <p class="note">{{t "verif.meta"}}</p>

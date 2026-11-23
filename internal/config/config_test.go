@@ -30,6 +30,10 @@ func TestValeursParDefaut(t *testing.T) {
 	if c.HeurePublication != 6*time.Hour || c.SMSCoupeCircuit != 3 || c.PreavisJours != 15 {
 		t.Errorf("heure=%v coupe-circuit=%v préavis=%d", c.HeurePublication, c.SMSCoupeCircuit, c.PreavisJours)
 	}
+	if c.SMS != "fake" || c.SMSParEmpreinte24h != 2 || c.SMSCodeEssais != 3 || c.SMSIPParHeure != 10 || c.SMSParHeure != 100 ||
+		c.SMSCoupeCircuitPlancher != 20 || c.SMSReactivation != time.Hour || c.SMSSansJSParHeure != 10 || c.SMSSansJSIPParHeure != 2 {
+		t.Errorf("réglages du SMS : %+v", c)
+	}
 	if !slices.Equal(c.PrefixesAutorises, []string{"70", "75", "76", "77", "78"}) {
 		t.Errorf("préfixes : %v", c.PrefixesAutorises)
 	}

@@ -12,13 +12,14 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/i18n"
 )
 
 //go:embed gabarits/*.html
 var fichiersGabarits embed.FS
 
-var pagesEquipe = []string{"connexion", "accueil", "membres", "acces", "audit", "interdit", "introuvable"}
+var pagesEquipe = []string{"connexion", "accueil", "membres", "acces", "audit", "interdit", "introuvable", "sms"}
 
 // nomCookieConnexion porte le jeton CSRF du formulaire de connexion, avant
 // toute session (protection contre la connexion forcée).
@@ -34,6 +35,9 @@ type OptionsEspace struct {
 	Magasin    Magasin
 	Catalogues *i18n.Catalogues
 	Journal    *slog.Logger
+	// CoupeCircuitSMS sert /equipe/sms (administrateurs) s'il est fourni :
+	// état du coupe-circuit du parcours SMS et réactivation manuelle.
+	CoupeCircuitSMS CoupeCircuit
 }
 
 // Espace sert /equipe. Il est séparé des pages publiques : ses propres
@@ -93,6 +97,10 @@ func NouvelEspace(o OptionsEspace) (*Espace, error) {
 	e.Gerer("POST /equipe/membres/{id}/desactiver", e.desactiver, Administrateur)
 	e.Gerer("POST /equipe/membres/{id}/reinitialiser", e.reinitialiser, Administrateur)
 	e.Gerer("GET /equipe/audit", e.audit, Administrateur)
+	if o.CoupeCircuitSMS != nil {
+		e.Gerer("GET /equipe/sms", e.pageSMS, Administrateur)
+		e.Gerer("POST /equipe/sms/reactiver", e.reactiverSMS, Administrateur)
+	}
 	e.mux.HandleFunc("/equipe/", func(w http.ResponseWriter, r *http.Request) {
 		e.rendre(w, http.StatusNotFound, "introuvable", Donnees{})
 	})
@@ -181,10 +189,14 @@ type Donnees struct {
 	Audit   []Action
 	Acces   *Acces
 	Cible   *Membre
+
+	AvecSMS bool                         // le parcours SMS est servi : lien vers /equipe/sms
+	SMS     *antifraude.EtatCoupeCircuit // page /equipe/sms
 }
 
 func (e *Espace) rendre(w http.ResponseWriter, statut int, page string, d Donnees) {
 	d.Roles = Roles
+	d.AvecSMS = e.opt.CoupeCircuitSMS != nil
 	var buf bytes.Buffer
 	if err := e.gabarits[page].ExecuteTemplate(&buf, "base", d); err != nil {
 		e.erreurInterne(w, "rendu de page équipe", err)
@@ -384,12 +396,45 @@ func (e *Espace) audit(w http.ResponseWriter, r *http.Request) {
 	e.rendre(w, http.StatusOK, "audit", d)
 }
 
+// pageSMS montre l'état du coupe-circuit du parcours SMS.
+func (e *Espace) pageSMS(w http.ResponseWriter, r *http.Request) {
+	d := donnees(r)
+	etat := e.opt.CoupeCircuitSMS.Etat()
+	d.SMS = &etat
+	d.Message = map[string]string{
+		"reactive": "equipe.sms.reactive", "actif": "equipe.sms.deja_actif",
+	}[r.URL.Query().Get("fait")]
+	e.rendre(w, http.StatusOK, "sms", d)
+}
+
+// reactiverSMS réactive le parcours SMS suspendu, avec une ligne d'audit.
+func (e *Espace) reactiverSMS(w http.ResponseWriter, r *http.Request) {
+	acteur, _ := MembreDe(r.Context())
+	fait, err := e.opt.Service.ReactiverSMS(r.Context(), acteur, e.opt.CoupeCircuitSMS)
+	if err != nil {
+		e.erreurInterne(w, "réactivation du parcours SMS", err)
+		return
+	}
+	if !fait {
+		http.Redirect(w, r, "/equipe/sms?fait=actif", http.StatusSeeOther)
+		return
+	}
+	e.opt.Journal.Warn("équipe : parcours SMS réactivé à la main par un administrateur")
+	http.Redirect(w, r, "/equipe/sms?fait=reactive", http.StatusSeeOther)
+}
+
 func fonctions(c *i18n.Catalogue) template.FuncMap {
 	return template.FuncMap{
 		"langue": func() string { return c.Code },
 		"t":      c.T,
 		"tf":     c.F,
 		"jour":   func(t time.Time) string { return c.Date(t) },
+		"dateheure": func(t time.Time) string {
+			t = t.UTC()
+			return c.F("format.date_heure", c.Date(t), c.Heure(time.Duration(t.Hour())*time.Hour+time.Duration(t.Minute())*time.Minute))
+		},
+		"duree":  c.Duree,
+		"nombre": func(n int64) string { return c.Nombre(n) },
 		"role":   func(r Role) string { return c.T("equipe.role." + string(r)) },
 		"action": func(a TypeAction) string { return c.T("equipe.action." + string(a)) },
 		"a":      func(m Membre, r Role) bool { return m.A(r) },

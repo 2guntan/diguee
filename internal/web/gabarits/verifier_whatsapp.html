@@ -26,6 +26,9 @@
     {{- if .CodeSecours}}
     <p><a href="/verifier/code">{{t "code.lien"}}</a></p>
     {{- end}}
+    {{- if .SMSSecours}}
+    <p><a href="/verifier/sms">{{t "sms.lien"}}</a></p>
+    {{- end}}
     {{- end}}
     <p><a class="btn{{if .Jeton}} secondaire{{end}}" href="/verifier">{{t "verif.whatsapp.nouveau"}}</a></p>
     {{- if .Simulation}}

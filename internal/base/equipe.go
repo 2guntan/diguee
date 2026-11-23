@@ -66,13 +66,14 @@ func (b *Base) ecrireEquipe(ctx context.Context, a equipe.Action, f func(pgx.Tx)
 func auditer(ctx context.Context, tx pgx.Tx, a equipe.Action) error {
 	j := pgtype.Date{Time: time.Date(a.Jour.Year(), a.Jour.Month(), a.Jour.Day(), 0, 0, 0, 0, time.UTC), Valid: true}
 	acteur := pgtype.Text{String: a.Acteur, Valid: a.Acteur != ""}
+	cible := pgtype.Text{String: a.Cible, Valid: a.Cible != ""} // vide : action sur la plateforme
 	var roles []string
 	if a.Roles != nil {
 		roles = versTextes(a.Roles)
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO audit_equipe (numero, jour, type, acteur, cible, roles)
 		SELECT coalesce(max(numero), 0) + 1, $1, $2, $3::uuid, $4::uuid, $5 FROM audit_equipe`,
-		j, string(a.Type), acteur, a.Cible, roles)
+		j, string(a.Type), acteur, cible, roles)
 	if err != nil {
 		return fmt.Errorf("audit de l'équipe : %w", err)
 	}
@@ -208,11 +209,11 @@ func (b *Base) Auditer(ctx context.Context, a equipe.Action) error {
 
 // ListerAudit implémente equipe.Magasin : les plus récentes d'abord.
 func (b *Base) ListerAudit(ctx context.Context, limite int) ([]equipe.Action, error) {
-	lignes, err := b.Pool.Query(ctx, `SELECT a.numero, a.jour, a.type, coalesce(a.acteur::text, ''), a.cible::text,
-			coalesce(ac.identifiant, ''), ci.identifiant, a.roles
+	lignes, err := b.Pool.Query(ctx, `SELECT a.numero, a.jour, a.type, coalesce(a.acteur::text, ''), coalesce(a.cible::text, ''),
+			coalesce(ac.identifiant, ''), coalesce(ci.identifiant, ''), a.roles
 		FROM audit_equipe a
 		LEFT JOIN membre ac ON ac.id = a.acteur
-		JOIN membre ci ON ci.id = a.cible
+		LEFT JOIN membre ci ON ci.id = a.cible
 		ORDER BY a.numero DESC LIMIT $1`, limite)
 	if err != nil {
 		return nil, err

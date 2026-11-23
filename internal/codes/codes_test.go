@@ -360,3 +360,65 @@ func TestConsole(t *testing.T) {
 		t.Fatal("contexte annulé ignoré")
 	}
 }
+
+// disjoncteurTest coupe après n envois autorisés.
+type disjoncteurTest struct {
+	n, appels int
+	coupe     bool
+}
+
+func (d *disjoncteurTest) Suspendu() bool { return d.coupe }
+func (d *disjoncteurTest) Autoriser() bool {
+	d.appels++
+	if d.coupe || d.appels > d.n {
+		d.coupe = true
+		return false
+	}
+	return true
+}
+
+// Un canal suspendu par son coupe-circuit n'envoie rien, ne calcule aucune
+// empreinte et ne compte rien ; la limite propre au canal est vérifiée avant
+// la limite partagée et ne l'entame pas quand elle refuse.
+func TestDisjoncteurEtLimiteDuCanal(t *testing.T) {
+	partagee := antifraude.NouvelleLimiteEmpreinte(3, nil)
+	canal := antifraude.NouvelleLimiteEmpreinte(1, nil)
+	d := &disjoncteurTest{n: 2}
+	b := &bancCodes{envoyeur: &envoyeurTest{}, doublons: &doublonsTest{deja: map[empreinte.Empreinte]bool{}},
+		sessions: &sessionsTest{verifiees: map[string]empreinte.Empreinte{}, absentes: map[string]bool{}},
+		t:        time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC), journal: &bytes.Buffer{}}
+	v, err := Nouveau(Options{Canal: "SMS", Envoyeur: b.envoyeur, Empreinteur: empreinte.NouveauHMACLocal(nil),
+		Doublons: b.doublons, Sessions: b.sessions, Prefixes: []string{"77"}, Limiteur: partagee, LimiteurCanal: canal,
+		Disjoncteur: d, Duree: 10 * time.Minute, Essais: 3, Maintenant: func() time.Time { return b.t },
+		Journal: slog.New(slog.NewJSONHandler(b.journal, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.v = v
+	if b.demander(t, "a", "771234567") != Envoye {
+		t.Fatal("1er SMS refusé")
+	}
+	if s := b.demander(t, "b", "771234567"); s != Limitee {
+		t.Fatalf("2e SMS du même numéro : %v", s)
+	}
+	emp, _ := empreinte.NouveauHMACLocal(nil).Calculer(context.Background(), "+221771234567")
+	for i := range 2 {
+		if !partagee.Autoriser(emp) {
+			t.Fatalf("la limite partagée ne doit compter que le SMS envoyé (%d)", i)
+		}
+	}
+	if b.demander(t, "c", "771234568") != Envoye {
+		t.Fatal("2e SMS refusé")
+	}
+	// 3e envoi : le disjoncteur coupe ; plus rien ne part ensuite.
+	if s := b.demander(t, "d", "771234569"); s != Suspendu || !v.Suspendu() {
+		t.Fatalf("coupure : %v", s)
+	}
+	appels := d.appels
+	if s := b.demander(t, "e", "771234560"); s != Suspendu || d.appels != appels {
+		t.Fatalf("suspendu : %v", s)
+	}
+	if len(b.envoyeur.codes) != 2 || v.Metriques().Suspendus.Load() != 2 || v.Essais() != 3 {
+		t.Fatalf("%d codes envoyés, %d suspendus", len(b.envoyeur.codes), v.Metriques().Suspendus.Load())
+	}
+}

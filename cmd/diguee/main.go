@@ -38,6 +38,7 @@ import (
 	journalpublic "github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/sms"
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/version"
 	"github.com/2guntan/diguee/internal/web"
@@ -92,6 +93,10 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	integrationWhatsApp, err := whatsapp.Construire(cfg, registre)
+	if err != nil {
+		return err
+	}
+	integrationSMS, err := sms.Construire(cfg, registre, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -170,9 +175,22 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	espaceEquipe, err := equipe.NouvelEspace(equipe.OptionsEspace{
+	// Coupe-circuit financier du parcours SMS (spec §7, ticket #10), en
+	// mémoire : suspension automatique sur un pic ou au plafond horaire,
+	// réactivation après DIGUEE_SMS_REACTIVATION ou par un administrateur
+	// (/equipe/sms, inscrite à l'audit).
+	optionsEspace := equipe.OptionsEspace{
 		Service: serviceEquipe, Sessions: sessionsEquipe, Magasin: b, Catalogues: catalogues, Journal: journal,
-	})
+	}
+	var coupeSMS *antifraude.CoupeCircuit
+	if integrationSMS.Envoyeur != nil {
+		coupeSMS = antifraude.NouveauCoupeCircuit(antifraude.OptionsCoupeCircuit{
+			Facteur: cfg.SMSCoupeCircuit, Plancher: cfg.SMSCoupeCircuitPlancher,
+			PlafondHoraire: cfg.SMSParHeure, Reactivation: cfg.SMSReactivation, Journal: journal,
+		})
+		optionsEspace.CoupeCircuitSMS = coupeSMS
+	}
+	espaceEquipe, err := equipe.NouvelEspace(optionsEspace)
 	if err != nil {
 		return err
 	}
@@ -200,8 +218,7 @@ func lancer(args []string, journal *slog.Logger) error {
 	}
 	// Code envoyé par WhatsApp, en secours (spec §5.2) : même limite par
 	// empreinte, même surveillance et même détection des doublons que la
-	// vérification inversée. Le parcours SMS (ticket #10) construira ici son
-	// propre codes.Verificateur, avec la même limiteEmpreinte.
+	// vérification inversée.
 	var codesWhatsApp *codes.Verificateur
 	if integrationWhatsApp.Envoyeur != nil {
 		codesWhatsApp, err = codes.Nouveau(codes.Options{
@@ -214,6 +231,22 @@ func lancer(args []string, journal *slog.Logger) error {
 			return err
 		}
 	}
+	// Code par SMS, en dernier recours (spec §5.3) : la même limite par
+	// empreinte, partagée par tous les canaux, plus une limite propre au
+	// SMS, moins d'essais, et le coupe-circuit.
+	var codesSMS *codes.Verificateur
+	if integrationSMS.Envoyeur != nil {
+		codesSMS, err = codes.Nouveau(codes.Options{
+			Canal: "SMS", Envoyeur: integrationSMS.Envoyeur,
+			Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+			Limiteur: limiteEmpreinte, LimiteurCanal: antifraude.NouvelleLimiteEmpreinte(cfg.SMSParEmpreinte24h, nil),
+			Disjoncteur: coupeSMS, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
+			Duree: cfg.CodeDuree, Essais: cfg.SMSCodeEssais, Journal: journal,
+		})
+		if err != nil {
+			return err
+		}
+	}
 	srv, err := web.Nouveau(web.Options{
 		Config: cfg, Catalogues: catalogues, Compteur: b, JournalPublic: jp,
 		Version: version.Version(), SHA256: sha, Journal: journal,
@@ -221,7 +254,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
 		// Captcha ALTCHA ; la limite par adresse (DIGUEE_IP_PAR_HEURE) est
 		// construite par le serveur web.
-		Altcha: captcha, Codes: codesWhatsApp,
+		Altcha: captcha, Codes: codesWhatsApp, SMS: integrationSMS, CodesSMS: codesSMS,
 	})
 	if err != nil {
 		return err

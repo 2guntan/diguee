@@ -1,0 +1,14 @@
+{{define "titre"}}{{t "dev.sms.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "dev.sms.titre"}}</h1>
+    <p class="alerte">{{t "dev.sms.avertissement"}}</p>
+    {{- if .CodeDev}}
+    <p role="status">{{tf "dev.sms.code" .CodeDev}} <a href="{{.Canal.Saisie}}">{{t "dev.sms.saisir"}}</a></p>
+    {{- else}}
+    <p>{{t "dev.sms.aucun"}}</p>
+    {{- end}}
+  </div>
+</section>
+{{end}}

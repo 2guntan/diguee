@@ -19,6 +19,9 @@
       {{- if a . "administrateur"}}
       <a href="/equipe/membres">{{t "equipe.nav.membres"}}</a>
       <a href="/equipe/audit">{{t "equipe.nav.audit"}}</a>
+      {{- if $.AvecSMS}}
+      <a href="/equipe/sms">{{t "equipe.nav.sms"}}</a>
+      {{- end}}
       {{- end}}
       <form class="en-ligne" method="post" action="/equipe/deconnexion">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">

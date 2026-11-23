@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/base/basetest"
 	"github.com/2guntan/diguee/internal/config"
@@ -71,6 +72,7 @@ type banc struct {
 	sessions *equipe.Sessions
 	horloge  *horloge
 	journal  *journalSur
+	coupe    *antifraude.CoupeCircuit // coupe-circuit du parcours SMS
 }
 
 func nouveauBanc(t *testing.T) *banc {
@@ -96,7 +98,10 @@ func nouveauBanc(t *testing.T) *banc {
 	journal := slog.New(slog.NewJSONHandler(j, nil))
 	ss := equipe.NouvellesSessions(hl.Maintenant)
 	svc := equipe.NouveauService(b, ch, ss, hl.Maintenant)
-	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal})
+	coupe := antifraude.NouveauCoupeCircuit(antifraude.OptionsCoupeCircuit{Facteur: 3, Plancher: 20, PlafondHoraire: 2,
+		Reactivation: time.Hour, Maintenant: hl.Maintenant, Journal: journal})
+	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal,
+		CoupeCircuitSMS: coupe})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +115,7 @@ func nouveauBanc(t *testing.T) *banc {
 	// Le service refuse les codes du pas de démarrage (anti-rejeu après un
 	// redémarrage) : on commence au pas suivant.
 	hl.Avancer(totp.Periode)
-	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j}
+	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j, coupe: coupe}
 }
 
 // compte est un membre créé pour le test, avec ses accès.
@@ -765,6 +770,10 @@ func TestPagesEquipeCompletesSansScript(t *testing.T) {
 	pages["accueil"] = c.get("/equipe/")
 	pages["membres"] = c.get("/equipe/membres")
 	pages["audit"] = c.get("/equipe/audit")
+	pages["sms actif"] = c.get("/equipe/sms")
+	for b.coupe.Autoriser() {
+	}
+	pages["sms suspendu"] = c.get("/equipe/sms")
 	pages["acces"] = c.post("/equipe/membres", url.Values{"csrf": {c.csrf("/equipe/")}, "identifiant": {"awa"}, "nom": {"Awa"}, "roles": {"redacteur"}})
 	pages["interdit"] = c.post("/equipe/membres", url.Values{"csrf": {"x"}})
 	for nom, p := range pages {
@@ -785,5 +794,76 @@ func TestPagesEquipeCompletesSansScript(t *testing.T) {
 	}
 	if p := c.get("/equipe"); p.statut != http.StatusSeeOther || p.location != "/equipe/" {
 		t.Errorf("/equipe : %d %s", p.statut, p.location)
+	}
+}
+
+// Le parcours SMS suspendu par le coupe-circuit se réactive à la main, par
+// un administrateur seulement, avec une ligne d'audit.
+func TestReactivationManuelleDuSMS(t *testing.T) {
+	b := nouveauBanc(t)
+	admin := b.creer(t, "admin", equipe.Administrateur)
+	redac := b.creer(t, "redac", equipe.Redacteur, equipe.Relecteur)
+	ca, cr := b.client(t), b.client(t)
+	ca.connecterCompte(admin)
+	cr.connecterCompte(redac)
+	if p := cr.get("/equipe/sms"); p.statut != http.StatusForbidden {
+		t.Fatalf("page SMS pour un non-administrateur : %d", p.statut)
+	}
+	p := ca.get("/equipe/sms")
+	if p.statut != http.StatusOK || !strings.Contains(p.corps, "Le parcours SMS est actif.") || strings.Contains(p.corps, "/equipe/sms/reactiver") ||
+		!strings.Contains(ca.get("/equipe/").corps, `href="/equipe/sms"`) {
+		t.Fatalf("page SMS active : %d", p.statut)
+	}
+	// Sans suspension, la réactivation ne fait rien et n'inscrit rien.
+	if p := ca.post("/equipe/sms/reactiver", url.Values{"csrf": {ca.csrf("/equipe/")}}); p.location != "/equipe/sms?fait=actif" {
+		t.Fatalf("réactivation sans suspension : %d %s", p.statut, p.location)
+	}
+	for b.coupe.Autoriser() {
+	}
+	p = ca.get("/equipe/sms")
+	if !strings.Contains(p.corps, "plafond absolu") || !strings.Contains(p.corps, `action="/equipe/sms/reactiver"`) {
+		t.Fatalf("page SMS suspendu : %s", p.corps)
+	}
+	if p := cr.post("/equipe/sms/reactiver", url.Values{"csrf": {cr.csrf("/equipe/")}}); p.statut != http.StatusForbidden || !b.coupe.Suspendu() {
+		t.Fatalf("réactivation par un non-administrateur : %d", p.statut)
+	}
+	if p := ca.post("/equipe/sms/reactiver", url.Values{"csrf": {"faux"}}); p.statut != http.StatusForbidden || !b.coupe.Suspendu() {
+		t.Fatalf("réactivation sans jeton CSRF : %d", p.statut)
+	}
+	if p := ca.post("/equipe/sms/reactiver", url.Values{"csrf": {ca.csrf("/equipe/")}}); p.location != "/equipe/sms?fait=reactive" || b.coupe.Suspendu() {
+		t.Fatalf("réactivation : %d %s", p.statut, p.location)
+	}
+	if p := ca.get("/equipe/sms?fait=reactive"); !strings.Contains(p.corps, "Le parcours SMS est réactivé.") {
+		t.Fatal("confirmation absente")
+	}
+	as, err := b.base.ListerAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, a := range as {
+		if a.Type == equipe.ActionReactivationSMS {
+			n++
+			if a.Acteur != admin.ID || a.Cible != "" || a.CibleIdentifiant != "" {
+				t.Errorf("ligne d'audit : %+v", a)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d lignes d'audit de réactivation", n)
+	}
+	if p := ca.get("/equipe/audit"); !strings.Contains(p.corps, "Réactivation manuelle du parcours SMS") ||
+		!strings.Contains(p.corps, "aucun (action sur la plateforme)") {
+		t.Fatal("audit : réactivation absente")
+	}
+	// En SQL direct, une réactivation doit être sans cible, et toute autre
+	// action en a une.
+	if _, err := b.base.Pool.Exec(context.Background(), `INSERT INTO audit_equipe (numero, jour, type, acteur, cible)
+		VALUES (1000, current_date, 'reactivation_sms', $1, $1)`, admin.ID); err == nil {
+		t.Error("une réactivation avec cible doit être refusée")
+	}
+	if _, err := b.base.Pool.Exec(context.Background(), `INSERT INTO audit_equipe (numero, jour, type, acteur)
+		VALUES (1001, current_date, 'connexion', $1)`, admin.ID); err == nil {
+		t.Error("une connexion sans cible doit être refusée")
 	}
 }

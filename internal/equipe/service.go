@@ -194,6 +194,31 @@ func exigerAdministrateur(acteur Membre) error {
 	return nil
 }
 
+// CoupeCircuit est le coupe-circuit du parcours SMS (antifraude.CoupeCircuit).
+type CoupeCircuit interface {
+	Suspendu() bool
+	Reactiver() bool
+	Etat() antifraude.EtatCoupeCircuit
+}
+
+// ReactiverSMS réactive à la main le parcours SMS suspendu par le
+// coupe-circuit. Réservé aux administrateurs ; l'action est d'abord
+// inscrite à l'audit, et le parcours n'est réactivé que si l'inscription a
+// réussi. Il renvoie false, sans rien inscrire, si le parcours n'était pas
+// suspendu.
+func (s *Service) ReactiverSMS(ctx context.Context, acteur Membre, cc CoupeCircuit) (bool, error) {
+	if err := exigerAdministrateur(acteur); err != nil {
+		return false, err
+	}
+	if !cc.Suspendu() {
+		return false, nil
+	}
+	if err := s.magasin.Auditer(ctx, Action{Type: ActionReactivationSMS, Jour: s.jour(), Acteur: acteur.ID}); err != nil {
+		return false, err
+	}
+	return cc.Reactiver(), nil
+}
+
 // Desactiver désactive un compte, définitivement, et ferme ses sessions.
 func (s *Service) Desactiver(ctx context.Context, acteur Membre, id string) error {
 	if err := exigerAdministrateur(acteur); err != nil {

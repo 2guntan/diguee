@@ -32,6 +32,7 @@ import (
 	"github.com/2guntan/diguee/internal/integration"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/sms"
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/whatsapp"
 )
@@ -74,6 +75,14 @@ type banc struct {
 	codes        *codes.Verificateur
 	console      *codes.Console
 	sortieCodes  *journalSur // console des codes (mode « fake »), hors du journal
+	// Code par SMS (ticket #10) : console, vérificateur et coupe-circuit.
+	sms        *sms.Integration
+	codesSMS   *codes.Verificateur
+	consoleSMS *codes.Console
+	sortieSMS  *journalSur
+	coupeSMS   *antifraude.CoupeCircuit
+	limiteSMS  *antifraude.LimiteEmpreinte
+	cfg        *config.Config
 }
 
 // attentes note les délais du ralentisseur sans dormir.
@@ -174,19 +183,45 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Code par SMS : sa propre console, la même limite par empreinte
+	// partagée, une limite propre au SMS et le coupe-circuit.
+	sortieSMS := &journalSur{}
+	integrationSMS, err := sms.Construire(cfg, &integration.Registre{}, sortieSMS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consoleSMS := integrationSMS.Envoyeur.(*codes.Console)
+	coupe := antifraude.NouveauCoupeCircuit(antifraude.OptionsCoupeCircuit{
+		Facteur: cfg.SMSCoupeCircuit, Plancher: cfg.SMSCoupeCircuitPlancher, PlafondHoraire: cfg.SMSParHeure,
+		Reactivation: cfg.SMSReactivation, Maintenant: h.maintenant, Journal: journal,
+	})
+	limiteSMS := antifraude.NouvelleLimiteEmpreinte(cfg.SMSParEmpreinte24h, h.maintenant)
+	cs2, err := codes.Nouveau(codes.Options{
+		Canal: "SMS", Envoyeur: consoleSMS, Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+		Limiteur: limite, LimiteurCanal: limiteSMS, Disjoncteur: coupe, Surveillance: surveillance,
+		Prefixes: cfg.PrefixesAutorises, Duree: cfg.CodeDuree, Essais: cfg.SMSCodeEssais, Maintenant: h.maintenant, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ralentisseurSMS := antifraude.NouveauRalentisseur(antifraude.OptionsRalentisseur{
+		ParHeure: cfg.SMSIPParHeure, Maintenant: h.maintenant, Attendre: att.attendre, Journal: journal,
+	})
 	s, err := Nouveau(Options{
 		Config: cfg, Catalogues: cs, Compteur: b,
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
 		Maintenant:  h.maintenant,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
 		WhatsApp: wa, Verificateur: v, Altcha: captcha, Ralentisseur: ralentisseur, Codes: cv,
+		SMS: integrationSMS, CodesSMS: cs2, RalentisseurSMS: ralentisseurSMS,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j, whatsapp: wa, verificateur: v, sessions: sessions, horloge: h,
 		altcha: captcha, limite: limite, surveillance: surveillance, ralentisseur: ralentisseur, attentes: att,
-		codes: cv, console: console, sortieCodes: sortieCodes}
+		codes: cv, console: console, sortieCodes: sortieCodes,
+		sms: integrationSMS, codesSMS: cs2, consoleSMS: consoleSMS, sortieSMS: sortieSMS, coupeSMS: coupe, limiteSMS: limiteSMS, cfg: cfg}
 }
 
 func (b *banc) compter(t *testing.T) (participations, reponses int) {
@@ -203,9 +238,10 @@ func (b *banc) compter(t *testing.T) (participations, reponses int) {
 // envoie les formulaires, et garde le cookie de session (le cookiejar de Go
 // n'envoie pas les cookies Secure en HTTP).
 type navigateur struct {
-	t      *testing.T
-	h      http.Handler
-	cookie *http.Cookie
+	t       *testing.T
+	h       http.Handler
+	cookie  *http.Cookie
+	adresse string // adresse de la connexion ; celle de httptest si vide
 }
 
 type page struct {
@@ -217,6 +253,9 @@ type page struct {
 
 func (n *navigateur) faire(req *http.Request) page {
 	n.t.Helper()
+	if n.adresse != "" {
+		req.RemoteAddr = n.adresse
+	}
 	if n.cookie != nil {
 		req.AddCookie(n.cookie)
 	}
@@ -605,7 +644,7 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 	pages["simulation"] = n2.get("/dev/whatsapp")
 	n3 := &navigateur{t: t, h: b.srv}
 	pages["sans javascript"] = n3.get("/verifier/sans-javascript")
-	pages["sms provisoire"] = n3.get("/verifier/sms")
+	pages["sms"] = n3.get("/verifier/sms")
 	pages["captcha refusé"] = n3.post("/verifier", url.Values{altcha.Champ: {"x"}})
 	// Code de secours (ticket #9).
 	n4 := &navigateur{t: t, h: b.srv}
@@ -617,13 +656,26 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 	pages["code numéro refusé"] = demanderCode(t, &navigateur{t: t, h: b.srv}, "12")
 	b.horloge.avancer(11 * time.Minute)
 	pages["code expiré"] = n4.get("/verifier/code/saisie")
+	// Code par SMS (ticket #10), sans JavaScript.
+	n5 := &navigateur{t: t, h: b.srv}
+	_, numeroSMS := numeroDeTest(13)
+	smsEnvoye(t, b, n5, numeroSMS, false)
+	pages["sms saisie"] = n5.get("/verifier/sms/saisie")
+	pages["dev sms"] = n5.get("/dev/sms")
+	_, autreSMS := numeroDeTest(14)
+	smsEnvoye(t, b, &navigateur{t: t, h: b.srv}, autreSMS, false)
+	pages["sms sans js refusé"] = demanderSMS(t, &navigateur{t: t, h: b.srv}, autreSMS, false)
+	for b.coupeSMS.Autoriser() {
+	}
+	pages["sms suspendu"] = n5.get("/verifier/sms")
 	for nom, p := range pages {
 		// Deux pages seulement chargent un script, servi depuis le domaine,
 		// et leur CSP est la seule à l'autoriser : la page du jeton
 		// (interrogation) et la page de vérification (captcha ALTCHA, sans
 		// connexion au serveur).
 		script := map[string]string{"jeton": "verifier.js", "jeton pas encore reçu": "verifier.js",
-			"verifier": "altcha.js", "captcha refusé": "altcha.js", "code": "altcha.js", "code numéro refusé": "altcha.js"}[nom]
+			"verifier": "altcha.js", "captcha refusé": "altcha.js", "code": "altcha.js", "code numéro refusé": "altcha.js",
+			"sms": "altcha.js", "sms sans js refusé": "altcha.js"}[nom]
 		avecScript := script == "verifier.js"
 		poids := len(p.corps) + len(css) + len(logo)
 		switch script {
@@ -686,12 +738,16 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 		"verifier":              "votre navigateur fait un petit calcul",
 		"captcha refusé":        "La vérification anti-robot n'a pas abouti.",
 		"sans javascript":       "Vérifier mon numéro par SMS",
-		"sms provisoire":        "La vérification par SMS n'est pas encore ouverte.",
+		"sms":                   "Recevoir un code par SMS",
 		"code":                  "Recevoir mon code",
 		"code saisie":           "Il vous reste 5 essais.",
 		"code faux":             "Il vous reste 4 essais.",
 		"code numéro refusé":    "n'est pas un numéro mobile sénégalais",
 		"code expiré":           "Ce code n'est plus valable.",
+		"sms saisie":            "Code reçu par SMS",
+		"dev sms":               "Simulation des SMS",
+		"sms sans js refusé":    "Trop de codes ont été demandés sans JavaScript",
+		"sms suspendu":          "momentanément indisponible",
 	} {
 		if !strings.Contains(texte(pages[nom].corps), attendu) {
 			t.Errorf("%s : %q attendu", nom, attendu)

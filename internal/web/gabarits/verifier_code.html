@@ -1,14 +1,14 @@
-{{define "titre"}}{{t "code.titre"}}{{end}}
+{{define "titre"}}{{t .Canal.Titre}}{{end}}
 {{define "contenu"}}
 <section class="page">
   <div class="wrap texte">
     <p class="kicker">{{t "parcours.etape.verification"}}</p>
-    <h1 class="display">{{t "code.titre"}}</h1>
+    <h1 class="display">{{t .Canal.Titre}}</h1>
     {{- if .Erreur}}
     <p class="erreur" role="alert">{{t .Erreur}}</p>
     {{- end}}
-    <p>{{tf "code.principe" (duree .DureeCode)}}</p>
-    <form class="formulaire" method="post" action="/verifier/code"
+    <p>{{tf .Canal.Principe (duree .DureeCode)}}</p>
+    <form class="formulaire" method="post" action="{{.Canal.Chemin}}"
       {{- with .Defi}} data-altcha-algorithme="{{.Algorithm}}" data-altcha-defi="{{.Challenge}}" data-altcha-max="{{.MaxNumber}}" data-altcha-sel="{{.Salt}}" data-altcha-signature="{{.Signature}}"{{end}}
       data-altcha-calcul="{{t "verif.captcha.calcul"}}" data-altcha-pret="{{t "verif.captcha.pret"}}" data-altcha-impossible="{{t "verif.captcha.impossible"}}">
       <div class="champ">
@@ -20,10 +20,17 @@
       <button class="btn" type="submit">{{t "code.bouton"}}</button>
       <p class="aide" id="altcha-etat" aria-live="polite"></p>
     </form>
+    {{- if .Canal.SMS}}
+    <noscript><p class="alerte">{{t "sms.sans_js.note"}}</p></noscript>
+    {{- else}}
     <noscript><p class="alerte">{{t "verif.captcha.sans_js"}} <a href="/verifier/sans-javascript">{{t "verif.captcha.sans_js.lien"}}</a></p></noscript>
+    {{- end}}
     <p class="note">{{t "verif.captcha.explication"}}</p>
     <p class="note">{{t "verif.oubli"}}</p>
-    <p class="note">{{t "code.meta"}}</p>
+    <p class="note">{{t .Canal.Meta}}</p>
+    {{- if and (not .Canal.SMS) .SMSSecours}}
+    <p><a href="/verifier/sms">{{t "sms.lien"}}</a></p>
+    {{- end}}
     <p><a href="/verifier">{{t "code.retour"}}</a></p>
   </div>
 </section>

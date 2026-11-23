@@ -8,7 +8,7 @@
       <dl class="params">
         <div><dt>{{t "equipe.audit.jour"}}</dt><dd>{{jour .Jour}}</dd></div>
         <div><dt>{{t "equipe.audit.acteur"}}</dt><dd>{{if .ActeurIdentifiant}}{{.ActeurIdentifiant}}{{else}}{{t "equipe.audit.commande"}}{{end}}</dd></div>
-        <div><dt>{{t "equipe.audit.cible"}}</dt><dd>{{.CibleIdentifiant}}</dd></div>
+        <div><dt>{{t "equipe.audit.cible"}}</dt><dd>{{if .CibleIdentifiant}}{{.CibleIdentifiant}}{{else}}{{t "equipe.audit.sans_cible"}}{{end}}</dd></div>
         {{- if .Roles}}
         <div><dt>{{t "equipe.membre.roles"}}</dt><dd>{{range $i, $r := .Roles}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{role $r}}{{end}}</dd></div>
         {{- end}}

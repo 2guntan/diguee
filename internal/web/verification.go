@@ -20,7 +20,7 @@ import (
 //	POST /verifier            limite par adresse, captcha, puis ouvre une session
 //	                          non vérifiée et tire un jeton
 //	GET  /verifier/sans-javascript   explication pour qui n'a pas JavaScript
-//	GET  /verifier/sms        parcours par SMS (provisoire, ticket #10)
+//	GET  /verifier/sms        code par SMS, en dernier recours (code.go)
 //	GET  /verifier/whatsapp   jeton, lien wa.me (mobile), QR code (ordinateur)
 //	POST /verifier/whatsapp   bouton « J'ai envoyé le message » (sans JavaScript)
 //	GET  /verifier/etat       interrogé toutes les 3 s par /statique/verifier.js
@@ -97,9 +97,7 @@ func (s *Serveur) creerJeton(w http.ResponseWriter, r *http.Request) {
 	id, err := s.opt.Sessions.Ouvrir(w, r)
 	if err == nil {
 		// Un seul parcours à la fois : le code éventuel de la session est révoqué.
-		if s.opt.Codes != nil {
-			s.opt.Codes.Oublier(id)
-		}
+		s.oublierParcours(id)
 		_, err = s.opt.Verificateur.Creer(id)
 	}
 	if err != nil {
@@ -189,10 +187,7 @@ func (s *Serveur) lienWaMe(jeton string) string {
 // detruireSession détruit la session et oublie son jeton ou son code.
 func (s *Serveur) detruireSession(w http.ResponseWriter, r *http.Request) {
 	if id, ok := s.opt.Sessions.ID(r); ok {
-		s.opt.Verificateur.Oublier(id)
-		if s.opt.Codes != nil {
-			s.opt.Codes.Oublier(id)
-		}
+		s.oublierParcours(id)
 	}
 	s.opt.Sessions.Detruire(w, r)
 }

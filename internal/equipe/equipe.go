@@ -80,6 +80,9 @@ const (
 	ActionReinitialiser    TypeAction = "reinitialisation_acces"
 	ActionConnexion        TypeAction = "connexion"
 	ActionCreationCommande TypeAction = "creation_commande"
+	// ActionReactivationSMS : un administrateur a réactivé le parcours SMS
+	// suspendu par le coupe-circuit (ticket #10). Sans cible.
+	ActionReactivationSMS TypeAction = "reactivation_sms"
 )
 
 // Action est une ligne de l'audit interne des comptes. Elle ne porte que le
@@ -89,7 +92,7 @@ type Action struct {
 	Jour   time.Time
 	Type   TypeAction
 	Acteur string // ID du membre qui agit ; vide pour la commande diguee creer-membre
-	Cible  string // ID du membre concerné
+	Cible  string // ID du membre concerné ; vide pour une action sur la plateforme (réactivation du SMS)
 	Roles  []Role // rôles après l'action (création, changement de rôles)
 
 	// Remplis à la lecture.

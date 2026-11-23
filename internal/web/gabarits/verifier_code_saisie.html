@@ -8,19 +8,19 @@
     <p class="erreur" role="alert">{{t .Erreur}}</p>
     {{- end}}
     {{- if .Essais}}
-    <p>{{tf "code.saisie.consigne" (duree .DureeCode)}}</p>
-    <form class="formulaire" method="post" action="/verifier/code/saisie">
+    <p>{{tf .Canal.Consigne (duree .DureeCode)}}</p>
+    <form class="formulaire" method="post" action="{{.Canal.Saisie}}">
       <div class="champ">
-        <label for="code">{{t "code.saisie.libelle"}}</label>
+        <label for="code">{{t .Canal.Libelle}}</label>
         <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" maxlength="12" required>
         <p class="aide">{{pluriel "code.saisie.essais" .Essais}}</p>
       </div>
       <button class="btn" type="submit">{{t "code.saisie.bouton"}}</button>
     </form>
     {{- end}}
-    <p><a class="btn{{if .Essais}} secondaire{{end}}" href="/verifier/code">{{t "code.saisie.nouveau"}}</a></p>
-    {{- if .Simulation}}
-    <p class="alerte"><a href="/dev/whatsapp">{{t "code.saisie.simulation"}}</a></p>
+    <p><a class="btn{{if .Essais}} secondaire{{end}}" href="{{.Canal.Chemin}}">{{t "code.saisie.nouveau"}}</a></p>
+    {{- with .Canal.Dev}}
+    <p class="alerte"><a href="{{.}}">{{t "code.saisie.simulation"}}</a></p>
     {{- end}}
   </div>
 </section>
