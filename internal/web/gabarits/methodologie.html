@@ -1,0 +1,66 @@
+{{define "titre"}}{{t "methodo.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "methodo.titre"}}</h1>
+    <p class="lead">{{t "methodo.chapeau"}}</p>
+
+    <h2>{{t "methodo.question.titre"}}</h2>
+    <blockquote>{{t "questionnaire.q3"}}</blockquote>
+    <p>{{t "methodo.question.texte"}}</p>
+
+    <h2>{{t "methodo.qui.titre"}}</h2>
+    <p>{{tf "methodo.qui.texte" (liste .Config.PrefixesAutorises)}}</p>
+
+    <h2>{{t "methodo.verification.titre"}}</h2>
+    <p>{{tf "methodo.verification.jeton" (duree .Config.JetonDuree)}}</p>
+    <p>{{tf "methodo.verification.code" (duree .Config.CodeDuree) (nombre .Config.CodeEssais)}}</p>
+    <p>{{tf "methodo.verification.limites" (nombre .Config.VerifParEmpreinte24h) (nombre .Config.IPParHeure)}}</p>
+
+    <h2>{{t "methodo.anonymat.titre"}}</h2>
+    <p>{{t "methodo.anonymat.empreinte"}}</p>
+    <p>{{tf "methodo.anonymat.tampon" (nombre .Config.TamponTaille) (duree .Config.TamponDelai)}}</p>
+
+    <h2>{{t "methodo.calendrier.titre"}}</h2>
+    <p>{{tf "methodo.calendrier.texte" (jour .Config.Ouverture) (jour .Config.Cloture)}}</p>
+
+    <h2>{{t "methodo.resultats.titre"}}</h2>
+    <p>{{tf "methodo.resultats.seuil" (nombre .Config.SeuilPublication)}}</p>
+    <p>{{tf "methodo.resultats.quotidien" (heure .Config.HeurePublication)}}</p>
+    <ul>
+      <li>{{t "methodo.resultats.croisement"}}</li>
+      <li>{{tf "methodo.resultats.case" (nombre .Config.SeuilCase)}}</li>
+      <li>{{t "methodo.resultats.arrondis"}}</li>
+      <li>{{tf "methodo.resultats.regions" (nombre .Config.SeuilCase)}}</li>
+      <li>{{t "methodo.resultats.ponderation"}}</li>
+    </ul>
+
+    <h2>{{t "methodo.journal.titre"}}</h2>
+    <p>{{t "methodo.journal.texte"}}</p>
+
+    <h2>{{t "methodo.observatoire.titre"}}</h2>
+    <p>{{tf "methodo.observatoire.texte" (nombre .Config.PreavisJours)}}</p>
+
+    <h2>{{t "methodo.parametres.titre"}}</h2>
+    <p>{{t "methodo.parametres.texte"}}</p>
+    <dl class="params">
+      <div><dt>{{t "param.ouverture"}}</dt><dd>{{jour .Config.Ouverture}}</dd></div>
+      <div><dt>{{t "param.cloture"}}</dt><dd>{{jour .Config.Cloture}}</dd></div>
+      <div><dt>{{t "param.prefixes"}}</dt><dd>{{liste .Config.PrefixesAutorises}}</dd></div>
+      <div><dt>{{t "param.seuil_publication"}}</dt><dd>{{nombre .Config.SeuilPublication}}</dd></div>
+      <div><dt>{{t "param.seuil_case"}}</dt><dd>{{nombre .Config.SeuilCase}}</dd></div>
+      <div><dt>{{t "param.heure_publication"}}</dt><dd>{{heure .Config.HeurePublication}}</dd></div>
+      <div><dt>{{t "param.tampon_taille"}}</dt><dd>{{nombre .Config.TamponTaille}}</dd></div>
+      <div><dt>{{t "param.tampon_delai"}}</dt><dd>{{duree .Config.TamponDelai}}</dd></div>
+      <div><dt>{{t "param.jeton_duree"}}</dt><dd>{{duree .Config.JetonDuree}}</dd></div>
+      <div><dt>{{t "param.code_duree"}}</dt><dd>{{duree .Config.CodeDuree}}</dd></div>
+      <div><dt>{{t "param.code_essais"}}</dt><dd>{{nombre .Config.CodeEssais}}</dd></div>
+      <div><dt>{{t "param.verif_par_empreinte"}}</dt><dd>{{nombre .Config.VerifParEmpreinte24h}}</dd></div>
+      <div><dt>{{t "param.ip_par_heure"}}</dt><dd>{{nombre .Config.IPParHeure}}</dd></div>
+      <div><dt>{{t "param.sms_coupe_circuit"}}</dt><dd>{{multiplicateur .Config.SMSCoupeCircuit}}</dd></div>
+      <div><dt>{{t "param.altcha_difficulte"}}</dt><dd>{{nombre .Config.AltchaDifficulte}}</dd></div>
+      <div><dt>{{t "param.preavis_jours"}}</dt><dd>{{nombre .Config.PreavisJours}}</dd></div>
+    </dl>
+  </div>
+</section>
+{{end}}

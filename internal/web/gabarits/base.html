@@ -1,0 +1,43 @@
+{{define "base"}}<!doctype html>
+<html lang="{{langue}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{template "titre" .}} · {{t "site.nom"}}</title>
+<meta name="description" content="{{t "site.description"}}">
+<meta name="theme-color" content="#13233A">
+<link rel="icon" type="image/svg+xml" href="/statique/logo.svg">
+<link rel="stylesheet" href="/statique/diguee.css">
+</head>
+<body>
+<a class="evitement" href="#contenu">{{t "nav.aller_au_contenu"}}</a>
+<header class="rule-b">
+  <div class="wrap">
+    <a class="logo" href="/" aria-label="{{t "nav.accueil"}}">{{template "logo" 30}}<span>{{t "site.marque"}}</span></a>
+    <nav aria-label="{{t "nav.libelle"}}">
+      <a href="/methodologie">{{t "nav.methodologie"}}</a>
+      <a href="/confidentialite">{{t "nav.confidentialite"}}</a>
+    </nav>
+  </div>
+</header>
+<main id="contenu">
+{{template "contenu" .}}
+</main>
+<footer class="rule-t">
+  <div class="wrap">
+    <div class="about">
+      <a class="logo" href="/" aria-label="{{t "nav.accueil"}}">{{template "logo" 26}}<span>{{t "site.marque"}}</span></a>
+      <p>{{t "pied.devise"}}</p>
+    </div>
+    <div class="links">
+      <div><a href="/methodologie">{{t "nav.methodologie"}}</a><a href="/confidentialite">{{t "nav.confidentialite"}}</a></div>
+      <p>{{tf "pied.cdp" .Config.NumeroCDP.Valeur}}</p>
+      <p class="version">{{tf "pied.version" .Version}}<br>{{t "pied.sha256"}} <code>{{.SHA256}}</code></p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
+{{end}}
+
+{{define "logo"}}<svg width="{{.}}" height="{{.}}" viewBox="4 4 40 40" aria-hidden="true"><path d="M40 26A18 18 0 1 1 22 8L22 13.5A12.5 12.5 0 1 0 34.5 26Z" fill="#13233A"/><path d="M26 4A18 18 0 0 1 44 22L38.5 22A12.5 12.5 0 0 0 26 9.5Z" fill="#F2B705"/></svg>{{end}}

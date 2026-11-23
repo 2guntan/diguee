@@ -1,0 +1,36 @@
+{{define "titre"}}{{t "accueil.titre"}}{{end}}
+{{define "contenu"}}
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-text">
+      <p class="kicker">{{t "accueil.surtitre"}}</p>
+      <h1 class="display">{{t "accueil.accroche"}}</h1>
+      <p class="lead">{{t "accueil.chapeau"}}</p>
+    </div>
+    <div class="question">
+      <span class="label">{{t "accueil.question_cle"}}</span>
+      <h2>{{t "questionnaire.q3"}}</h2>
+      <p class="mention"><strong>{{t "accueil.mention"}}</strong></p>
+      {{- if eq .Phase "a_venir"}}
+      {{- if .Config.Ouverture.Provisoire}}
+      <span class="btn" aria-disabled="true">{{t "accueil.bouton.bientot"}}</span>
+      {{- else}}
+      <span class="btn" aria-disabled="true">{{tf "accueil.bouton.ouvre_le" (jour .Config.Ouverture)}}</span>
+      {{- end}}
+      {{- else if eq .Phase "ouverte"}}
+      <span class="btn" aria-disabled="true">{{t "accueil.bouton.parcours_a_venir"}}</span>
+      {{- else}}
+      <span class="btn" aria-disabled="true">{{t "accueil.bouton.close"}}</span>
+      {{- end}}
+      <p class="note">{{t "accueil.liens.intro"}} <a href="/methodologie">{{t "accueil.liens.methodologie"}}</a> · <a href="/confidentialite">{{t "accueil.liens.confidentialite"}}</a></p>
+    </div>
+  </div>
+</section>
+<section class="status rule-t rule-b" aria-label="{{t "accueil.compteur.libelle"}}">
+  <div class="wrap">
+    <span class="dot" aria-hidden="true"></span>
+    <p><strong id="compteur">{{pluriel "accueil.compteur" .Compteur}}</strong>
+    {{- if lt .Compteur .Config.SeuilPublication}} {{tf "accueil.seuil" (nombre .Config.SeuilPublication)}}{{else}} {{t "accueil.seuil_atteint"}}{{end}}</p>
+  </div>
+</section>
+{{end}}

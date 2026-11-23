@@ -1,0 +1,64 @@
+{{define "titre"}}{{t "confid.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "confid.titre"}}</h1>
+    <p class="lead">{{t "confid.chapeau"}}</p>
+
+    <h2>{{t "confid.responsable.titre"}}</h2>
+    <p>{{t "confid.responsable.texte"}}</p>
+    <dl class="params">
+      <div><dt>{{t "confid.responsable.nom"}}</dt><dd>{{.Config.StructureNom.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.adresse"}}</dt><dd>{{.Config.StructureAdresse.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{.Config.NumeroCDP.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.contact"}}</dt><dd>{{.Config.Contact.Valeur}}</dd></div>
+    </dl>
+
+    <h2>{{t "confid.finalite.titre"}}</h2>
+    <p>{{t "confid.finalite.texte"}}</p>
+
+    <h2>{{t "confid.donnees.titre"}}</h2>
+    <ul>
+      <li>{{tf "confid.donnees.numero" (jour .Config.Cloture)}}</li>
+      <li>{{t "confid.donnees.reponse"}}</li>
+      <li>{{t "confid.donnees.profil"}}</li>
+    </ul>
+
+    <h2>{{t "confid.jamais.titre"}}</h2>
+    <p>{{t "confid.jamais.texte"}}</p>
+
+    <h2>{{t "confid.destinataires.titre"}}</h2>
+    <ul>
+      <li>{{t "confid.destinataires.ovh"}}</li>
+      <li>{{t "confid.destinataires.meta"}}</li>
+      <li>{{t "confid.destinataires.sms"}}</li>
+    </ul>
+    <p>{{t "confid.destinataires.transfert"}}</p>
+
+    <h2>{{t "confid.durees.titre"}}</h2>
+    <ul>
+      <li>{{tf "confid.durees.empreinte" (jour .Config.Cloture)}}</li>
+      <li>{{t "confid.durees.reponses"}}</li>
+      <li>{{t "confid.durees.sauvegardes"}}</li>
+      <li>{{t "confid.durees.journaux"}}</li>
+    </ul>
+
+    <h2>{{t "confid.cookie.titre"}}</h2>
+    <p>{{t "confid.cookie.texte"}}</p>
+
+    <h2>{{t "confid.droits.titre"}}</h2>
+    <p>{{tf "confid.droits.texte" .Config.Contact.Valeur}}</p>
+    <p>{{t "confid.droits.definitive"}}</p>
+    <p>{{t "confid.droits.cdp"}}</p>
+
+    <h2>{{t "confid.parametres.titre"}}</h2>
+    <dl class="params">
+      <div><dt>{{t "param.ouverture"}}</dt><dd>{{jour .Config.Ouverture}}</dd></div>
+      <div><dt>{{t "param.cloture"}}</dt><dd>{{jour .Config.Cloture}}</dd></div>
+      <div><dt>{{t "param.seuil_publication"}}</dt><dd>{{nombre .Config.SeuilPublication}}</dd></div>
+      <div><dt>{{t "param.seuil_case"}}</dt><dd>{{nombre .Config.SeuilCase}}</dd></div>
+      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{.Config.NumeroCDP.Valeur}}</dd></div>
+    </dl>
+  </div>
+</section>
+{{end}}

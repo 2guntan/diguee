@@ -1,0 +1,45 @@
+name: Intégration continue
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: diguee
+          POSTGRES_PASSWORD: diguee
+          POSTGRES_DB: diguee_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U diguee"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Avec CI non vide, les tests qui demandent la base échouent au lieu d'être sautés.
+      DIGUEE_TEST_POSTGRES_URL: postgres://diguee:diguee@localhost:5432/diguee_test?sslmode=disable
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.7"
+      - name: Formatage
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+      - name: Build reproductible
+        run: make verifier-build
