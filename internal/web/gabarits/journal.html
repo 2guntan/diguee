@@ -13,6 +13,17 @@
     <p>{{t "journal.verifier.chaine"}}</p>
     <pre class="commande"><code>{{.Commande}}</code></pre>
     <p>{{t "journal.verifier.ancrage"}}</p>
+    {{if .Ancrage}}
+    <h2 id="ancrages">{{t "journal.ancrage.titre"}}</h2>
+    <p>{{t "journal.ancrage.chapeau"}}</p>
+    {{if .Ancrages}}<ul class="ancrages">
+      {{range .Ancrages}}<li><strong>{{date .Jour}}</strong>{{if .LienOTS}} · {{tf "journal.ancrage.entree" (nombre .Numero)}} <code class="empreinte">{{.Empreinte}}</code> · <a href="{{.LienOTS}}">{{t "journal.ancrage.preuve"}}</a> ({{if .Bloc}}{{tf "journal.ancrage.bitcoin" (nombre .Bloc)}}{{else}}{{t "journal.ancrage.attente"}}{{end}}){{end}}{{range .Archives}} · <a href="{{.Lien}}">{{t .Cle}}</a>{{end}}</li>
+      {{end}}
+    </ul>{{else}}<p>{{t "journal.ancrage.aucun"}}</p>{{end}}
+    <p>{{t "journal.ancrage.verifier"}}</p>
+    <pre class="commande"><code>{{.CommandeOTS}}</code></pre>
+    <p>{{t "journal.ancrage.verifier.suite"}} <a href="/journal/ancrages.json">{{t "journal.ancrage.liste"}}</a></p>
+    {{end}}
 
     {{if .Entrees}}
     <h2>{{t "journal.entrees.titre"}}</h2>

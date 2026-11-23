@@ -77,6 +77,11 @@ type Options struct {
 
 	// JournalPublic sert /journal et /journal.json s'il est fourni.
 	JournalPublic *journal.Journal
+	// Ancrages donne les ancrages extérieurs du journal (ticket #12) : les
+	// derniers sont affichés sur /journal, les preuves OpenTimestamps servies
+	// sous /journal/ancrages/AAAA-MM-JJ.ots et la liste complète sous
+	// /journal/ancrages.json. Facultatif.
+	Ancrages Ancrages
 
 	// Equipe sert l'espace équipe sous /equipe s'il est fourni (paquet
 	// equipe) : routes, cookies et contrôles d'accès séparés des pages
@@ -211,6 +216,10 @@ func Nouveau(opt Options) (*Serveur, error) {
 	if opt.JournalPublic != nil {
 		s.mux.HandleFunc("GET /journal", s.journalPage)
 		s.mux.HandleFunc("GET /journal.json", s.journalExport)
+	}
+	if opt.Ancrages != nil {
+		s.mux.HandleFunc("GET /journal/ancrages/{fichier}", s.preuveOTS)
+		s.mux.HandleFunc("GET /journal/ancrages.json", s.ancragesJSON)
 	}
 	if opt.Equipe != nil {
 		s.mux.Handle("/equipe", opt.Equipe)

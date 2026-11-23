@@ -1,0 +1,42 @@
+{{define "titre"}}{{t "equipe.ancrage.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.ancrage.titre"}}</h1>
+    {{- with .Ancrage}}
+    <p>{{t "equipe.ancrage.chapeau"}}</p>
+    {{- if eq .Mode "fake"}}
+    <p class="alerte" role="status">{{t "equipe.ancrage.fake"}}</p>
+    {{- end}}
+    {{- range .Echecs}}
+    <p class="alerte" role="alert">{{tf "equipe.ancrage.echec" .Service (dateheure .Quand) (entier .Essais) .Erreur}}</p>
+    {{- end}}
+
+    <h2>{{t "equipe.ancrage.x.titre"}}</h2>
+    <p>{{t "equipe.ancrage.x.consigne"}}</p>
+    {{- range .Semaines}}
+    <div class="entree">
+      <h3>{{tf "equipe.ancrage.x.semaine" (jour .Lundi)}}</h3>
+      <textarea class="texte-x" readonly rows="6" aria-label="{{tf "equipe.ancrage.x.semaine" (jour .Lundi)}}">{{tf "equipe.ancrage.x.texte" (jour .Jour) (nombre .Numero) .Empreinte .LienJournal .LienPreuve}}</textarea>
+    </div>
+    {{- else}}
+    <p>{{t "equipe.ancrage.x.aucun"}}</p>
+    {{- end}}
+
+    <h2>{{t "equipe.ancrage.jours.titre"}}</h2>
+    {{- range .Jours}}
+    <div class="entree">
+      <h3>{{jour .Jour}}</h3>
+      <dl class="params">
+        {{- with .Preuve}}
+        <div><dt>{{t "equipe.ancrage.tete"}}</dt><dd>{{tf "equipe.ancrage.tete.valeur" (nombre .Numero)}} <code class="empreinte">{{.Empreinte}}</code></dd></div>
+        <div><dt>{{t "equipe.ancrage.ots"}}</dt><dd>{{tf "equipe.ancrage.ots.calendriers" (entier .Calendriers)}} · {{if .Bitcoin}}{{t "equipe.ancrage.ots.bitcoin"}}{{else}}{{t "equipe.ancrage.ots.attente"}}{{end}}</dd></div>
+        {{- else}}
+        <div><dt>{{t "equipe.ancrage.ots"}}</dt><dd>{{t "equipe.ancrage.ots.absente"}}</dd></div>
+        {{- end}}
+        <div><dt>{{t "equipe.ancrage.archives"}}</dt><dd>{{range $i, $a := .Archives}}{{if $i}} · {{end}}<a href="{{$a.Lien}}">/{{$a.Cible}}</a>{{else}}{{t "equipe.ancrage.archives.aucune"}}{{end}}</dd></div>
+      </dl>
+    </div>
+    {{- else}}
+    <p>{{t "equipe.ancrage.jours.aucun"}}</p>
+    {{- end}}
+    {{- end}}
+{{end}}

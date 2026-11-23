@@ -10,6 +10,9 @@
 //	                        fois son mot de passe et son secret TOTP
 //	diguee publier          produit la publication quotidienne due (la dernière
 //	                        si elle manque) ; sans effet si elle existe déjà
+//	diguee ancrer           ancre le journal public pour le jour dû
+//	                        (OpenTimestamps, archive.org) s'il ne l'est pas
+//	                        encore, et met à niveau les preuves précédentes
 //	diguee verifier-journal [-attendu EMPREINTE]... [-precedent ANCIEN] <fichier.json|url>
 //	                        vérifie un export du journal public (sans configuration ni base)
 package main
@@ -28,6 +31,7 @@ import (
 	"time"
 
 	"github.com/2guntan/diguee/internal/altcha"
+	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/codes"
@@ -107,6 +111,10 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	integrationAncrage, err := ancrage.Construire(cfg, registre)
+	if err != nil {
+		return err
+	}
 	q := questionnaire.Courant()
 	// Composition de la population (ANSD), comparée à celle de l'échantillon
 	// dans les publications ; nil tant qu'elle vaut « À COMPLÉTER ».
@@ -176,6 +184,21 @@ func lancer(args []string, journal *slog.Logger) error {
 		Heure: cfg.HeurePublication, Journal: journal,
 	}
 
+	// Ancrage extérieur du journal public (ADR 0010, ticket #12) : chaque
+	// jour, DIGUEE_ANCRAGE_DECALAGE après la publication, OpenTimestamps et
+	// archive.org ; nouveaux essais à délai croissant en cas d'échec.
+	jp := journalpublic.Nouveau(b, nil)
+	ancreur, err := ancrage.Nouveau(ancrage.Options{
+		Mode: integrationAncrage.Mode, Magasin: b, Journal: jp,
+		Calendriers: integrationAncrage.Calendriers, MinCalendriers: integrationAncrage.MinCalendriers,
+		Ouvrir: integrationAncrage.Ouvrir, Archiveur: integrationAncrage.Archiveur,
+		URLPublique: cfg.URLPublique, Heure: (cfg.HeurePublication + cfg.Ancrage.Decalage) % (24 * time.Hour),
+		Log: journal,
+	})
+	if err != nil {
+		return err
+	}
+
 	switch commande {
 	case "migrer":
 		return nil
@@ -183,15 +206,16 @@ func lancer(args []string, journal *slog.Logger) error {
 		return creerMembre(ctx, serviceEquipe, args[1:], os.Stdout)
 	case "publier":
 		return publier(ctx, planificateur, os.Stdout)
+	case "ancrer":
+		return ancrer(ctx, ancreur, os.Stdout)
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, verifier-config, version, verifier-journal)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, ancrer, verifier-config, version, verifier-journal)", commande)
 	}
 
 	// Journal public : une entrée « mise en production » à chaque démarrage sur
 	// une nouvelle version (ou un nouvel exécutable), aucune sur un simple
 	// redémarrage. Sans elle, le serveur ne démarre pas.
-	jp := journalpublic.Nouveau(b, nil)
 	mep, inscrite, err := jp.InscrireMiseEnProduction(ctx, version.Version(), sha)
 	if err != nil {
 		return err
@@ -210,12 +234,20 @@ func lancer(args []string, journal *slog.Logger) error {
 		defer close(planifiee)
 		planificateur.Lancer(ctx)
 	}()
+	// L'ancrage du jour qui manque est rattrapé aussitôt, en tâche de fond :
+	// un service extérieur lent ou injoignable ne retarde pas le démarrage.
+	ancree := make(chan struct{})
+	go func() {
+		defer close(ancree)
+		ancreur.Lancer(ctx)
+	}()
 	// Coupe-circuit financier du parcours SMS (spec §7, ticket #10), en
 	// mémoire : suspension automatique sur un pic ou au plafond horaire,
 	// réactivation après DIGUEE_SMS_REACTIVATION ou par un administrateur
 	// (/equipe/sms, inscrite à l'audit).
 	optionsEspace := equipe.OptionsEspace{
 		Service: serviceEquipe, Sessions: sessionsEquipe, Magasin: b, Catalogues: catalogues, Journal: journal,
+		Ancrage: ancreur,
 	}
 	var coupeSMS *antifraude.CoupeCircuit
 	if integrationSMS.Envoyeur != nil {
@@ -283,7 +315,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		}
 	}
 	srv, err := web.Nouveau(web.Options{
-		Config: cfg, Catalogues: catalogues, Publications: b, JournalPublic: jp,
+		Config: cfg, Catalogues: catalogues, Publications: b, JournalPublic: jp, Ancrages: b,
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions, Questionnaire: q,
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
@@ -330,6 +362,7 @@ func lancer(args []string, journal *slog.Logger) error {
 	journal.Info("tampon écrit à l'arrêt", "envois", attente)
 	arreter()
 	<-planifiee
+	<-ancree
 	return errServeur
 }
 
@@ -352,4 +385,26 @@ func publier(ctx context.Context, pl *publication.Planificateur, sortie io.Write
 	fmt.Fprintf(sortie, "publication du %s : %s (%d réponses, %s)\nsha256 de l'instantané %s\n",
 		p.Jour.Format(time.DateOnly), etat, p.Reponses, detail, p.Empreinte)
 	return nil
+}
+
+// ancrer lance à la main l'ancrage du jour dû ; sans effet sur ce qui est
+// déjà ancré. Une erreur signale un service qui n'a pas répondu.
+func ancrer(ctx context.Context, a *ancrage.Ancreur, sortie io.Writer) error {
+	bilan, err := a.Executer(ctx)
+	jour := bilan.Jour.Format(time.DateOnly)
+	if p := bilan.Preuve; p != nil {
+		etat := "déjà obtenue"
+		if bilan.Nouvelle {
+			etat = "obtenue"
+		}
+		fmt.Fprintf(sortie, "ancrage du %s : preuve OpenTimestamps %s (entrée %d, %d calendrier(s))\nempreinte %s\n",
+			jour, etat, p.Numero, p.Calendriers, p.Empreinte)
+	}
+	for _, ar := range bilan.Archives {
+		fmt.Fprintf(sortie, "archive.org /%s : %s\n", ar.Cible, ar.Lien)
+	}
+	if bilan.MisesANiveau > 0 {
+		fmt.Fprintf(sortie, "%d preuve(s) complétée(s) d'une attestation Bitcoin\n", bilan.MisesANiveau)
+	}
+	return err
 }

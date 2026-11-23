@@ -210,3 +210,38 @@ func TestNumeroWhatsApp(t *testing.T) {
 		t.Error("« À COMPLÉTER » n'est pas un numéro")
 	}
 }
+
+// L'ancrage est simulé par défaut en développement, réel par défaut en
+// production ; ses réglages sont contrôlés.
+func TestReglagesAncrage(t *testing.T) {
+	charger := func(m map[string]string) (*Config, error) {
+		m["DIGUEE_POSTGRES_URL"] = "postgres://localhost/diguee"
+		return Charger(func(k string) string { return m[k] })
+	}
+	c, err := charger(map[string]string{})
+	if err != nil || c.Ancrage.Mode != "fake" || len(c.Ancrage.Calendriers) != 3 || c.Ancrage.MinCalendriers != 2 ||
+		c.Ancrage.Archive != "https://web.archive.org" || c.URLPublique != "https://consultation.diguee.sn" {
+		t.Fatalf("défauts : %+v, %v", c.Ancrage, err)
+	}
+	if c, err := charger(map[string]string{"DIGUEE_ENV": "production"}); err != nil || c.Ancrage.Mode != "reel" {
+		t.Fatalf("production : %+v, %v", c, err)
+	}
+	c, err = charger(map[string]string{"DIGUEE_ANCRAGE": "reel", "DIGUEE_ANCRAGE_CALENDRIERS": "https://a.example/, https://b.example",
+		"DIGUEE_ANCRAGE_MIN_CALENDRIERS": "1", "DIGUEE_URL_PUBLIQUE": "https://essai.example/"})
+	if err != nil || c.Ancrage.Calendriers[0] != "https://a.example" || c.Ancrage.MinCalendriers != 1 || c.URLPublique != "https://essai.example" {
+		t.Fatalf("réglages : %+v, %v", c.Ancrage, err)
+	}
+	for nom, m := range map[string]map[string]string{
+		"mode":         {"DIGUEE_ANCRAGE": "twitter"},
+		"http":         {"DIGUEE_ANCRAGE_CALENDRIERS": "http://a.example"},
+		"chemin":       {"DIGUEE_ANCRAGE_ARCHIVE": "https://web.archive.org/save"},
+		"minimum":      {"DIGUEE_ANCRAGE_MIN_CALENDRIERS": "4"},
+		"vide":         {"DIGUEE_ANCRAGE_CALENDRIERS": " , "},
+		"décalage":     {"DIGUEE_ANCRAGE_DECALAGE": "25h"},
+		"url publique": {"DIGUEE_URL_PUBLIQUE": "consultation.diguee.sn"},
+	} {
+		if _, err := charger(m); err == nil {
+			t.Errorf("%s : accepté", nom)
+		}
+	}
+}

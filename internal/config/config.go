@@ -124,6 +124,34 @@ type Config struct {
 
 	// Observatoire (§9).
 	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15
+
+	// URLPublique est l'adresse du site, sans « / » final : pages déposées
+	// sur archive.org et liens du texte hebdomadaire pour X.
+	URLPublique string // DIGUEE_URL_PUBLIQUE : https://consultation.diguee.sn
+
+	// Ancrage extérieur du journal public (§10, ticket #12).
+	Ancrage Ancrage
+}
+
+// Ancrage règle l'ancrage quotidien du journal public : OpenTimestamps et
+// archive.org, deux services publics sans compte.
+type Ancrage struct {
+	// Mode : fake (faux calendriers et fausse archive, sans réseau ; défaut
+	// en développement, refusé en production) ou reel (défaut en production).
+	Mode           string        // DIGUEE_ANCRAGE
+	Calendriers    []string      // DIGUEE_ANCRAGE_CALENDRIERS : adresses https:// séparées par des virgules
+	MinCalendriers int           // DIGUEE_ANCRAGE_MIN_CALENDRIERS : 2 (au plus le nombre de calendriers)
+	Archive        string        // DIGUEE_ANCRAGE_ARCHIVE : https://web.archive.org
+	Decalage       time.Duration // DIGUEE_ANCRAGE_DECALAGE : 15m après DIGUEE_HEURE_PUBLICATION
+	Delai          time.Duration // DIGUEE_ANCRAGE_DELAI : 60s, délai d'attente d'un appel
+}
+
+// CalendriersParDefaut sont les calendriers publics OpenTimestamps utilisés
+// par défaut (ceux du client de référence).
+var CalendriersParDefaut = []string{
+	"https://a.pool.opentimestamps.org",
+	"https://b.pool.opentimestamps.org",
+	"https://finney.calendar.eternitywall.com",
 }
 
 // OVHKMS décrit l'accès au KMS d'OVHcloud (spec §5.4). L'authentification se
@@ -279,6 +307,29 @@ func Charger(getenv func(string) string) (*Config, error) {
 
 	c.PreavisJours = l.entier("DIGUEE_PREAVIS_JOURS", 15)
 
+	c.URLPublique = l.adresseHTTPS("DIGUEE_URL_PUBLIQUE", "https://consultation.diguee.sn")
+	modeAncrage := "fake"
+	if c.Env == Production {
+		modeAncrage = "reel"
+	}
+	c.Ancrage.Mode = l.choix("DIGUEE_ANCRAGE", modeAncrage, "fake", "reel")
+	for _, u := range strings.Split(l.chaine("DIGUEE_ANCRAGE_CALENDRIERS", strings.Join(CalendriersParDefaut, ",")), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			c.Ancrage.Calendriers = append(c.Ancrage.Calendriers, l.adresseHTTPSValeur("DIGUEE_ANCRAGE_CALENDRIERS", u))
+		}
+	}
+	if len(c.Ancrage.Calendriers) == 0 {
+		l.erreur("DIGUEE_ANCRAGE_CALENDRIERS", errors.New("ne contient aucun calendrier"))
+	}
+	c.Ancrage.MinCalendriers = l.auPlus("DIGUEE_ANCRAGE_MIN_CALENDRIERS", min(2, max(1, len(c.Ancrage.Calendriers))),
+		"le nombre de DIGUEE_ANCRAGE_CALENDRIERS", len(c.Ancrage.Calendriers))
+	c.Ancrage.Archive = l.adresseHTTPS("DIGUEE_ANCRAGE_ARCHIVE", "https://web.archive.org")
+	c.Ancrage.Decalage = l.duree("DIGUEE_ANCRAGE_DECALAGE", "15m")
+	if c.Ancrage.Decalage >= 24*time.Hour {
+		l.erreur("DIGUEE_ANCRAGE_DECALAGE", errors.New("doit être inférieur à 24h"))
+	}
+	c.Ancrage.Delai = l.duree("DIGUEE_ANCRAGE_DELAI", "60s")
+
 	if len(l.erreurs) > 0 {
 		return nil, errors.Join(l.erreurs...)
 	}
@@ -414,9 +465,15 @@ func (l *lecteur) adresseHTTPS(nom, defaut string) string {
 		l.erreur(nom, errors.New("est obligatoire avec ce DIGUEE_EMPREINTEUR"))
 		return ""
 	}
+	return l.adresseHTTPSValeur(nom, v)
+}
+
+// adresseHTTPSValeur contrôle une adresse https:// sans chemin ni paramètres.
+func (l *lecteur) adresseHTTPSValeur(nom, v string) string {
+	v = strings.TrimRight(v, "/")
 	u, err := url.Parse(v)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.User != nil {
-		l.erreur(nom, fmt.Errorf("vaut %q ; attendu une adresse https:// sans chemin, par exemple https://eu-west-par.okms.ovh.net", v))
+		l.erreur(nom, fmt.Errorf("vaut %q ; attendu une adresse https:// sans chemin, comme https://exemple.org", v))
 	}
 	return v
 }

@@ -2,13 +2,16 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"maps"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/journal"
 )
@@ -16,6 +19,15 @@ import (
 // EntreesParPage est le nombre d'entrées par page de /journal : la page reste
 // sous 100 Ko quelle que soit la taille du journal.
 const EntreesParPage = 50
+
+// AncragesAffiches est le nombre de jours d'ancrage affichés sur /journal.
+const AncragesAffiches = 7
+
+// Ancrages donne les ancrages extérieurs du journal. Implémenté par base.Base.
+type Ancrages interface {
+	Ancrages(ctx context.Context, limite int) ([]ancrage.Etat, error)
+	LirePreuve(ctx context.Context, jour time.Time) (*ancrage.Preuve, error)
+}
 
 // VueJournal est ce qu'affiche la page /journal.
 type VueJournal struct {
@@ -27,6 +39,27 @@ type VueJournal struct {
 	Pages     int64
 	Recentes  int64 // page des entrées plus récentes, 0 s'il n'y en a pas
 	Anciennes int64 // page des entrées plus anciennes, 0 s'il n'y en a pas
+
+	Ancrage     bool         // les ancrages extérieurs sont servis
+	Ancrages    []VueAncrage // les derniers jours ancrés, les plus récents d'abord
+	Ancrables   bool         // une preuve au moins est affichée
+	CommandeOTS string       // commandes de vérification d'une preuve
+}
+
+// VueAncrage est un jour d'ancrage tel qu'il est affiché sur /journal.
+type VueAncrage struct {
+	Jour      time.Time
+	Numero    int64
+	Empreinte string
+	LienOTS   string
+	Bloc      int64 // premier bloc Bitcoin attesté ; 0 : en attente
+	Archives  []VueArchive
+}
+
+// VueArchive est un dépôt sur archive.org.
+type VueArchive struct {
+	Cle  string // clé du catalogue de la page déposée
+	Lien string
 }
 
 // VueEntree est une entrée telle qu'elle est affichée.
@@ -94,6 +127,28 @@ func (s *Serveur) journalPage(w http.ResponseWriter, r *http.Request) {
 	if v.Page < v.Pages {
 		v.Anciennes = v.Page + 1
 	}
+	if s.opt.Ancrages != nil {
+		v.Ancrage, v.CommandeOTS = true, ancrage.CommandeVerification
+		etats, err := s.opt.Ancrages.Ancrages(ctx, AncragesAffiches)
+		if err != nil {
+			// Les ancrages ne sont qu'un complément : la page reste servie.
+			s.opt.Journal.Error("lecture des ancrages", "erreur", err)
+		}
+		for _, e := range etats {
+			va := VueAncrage{Jour: e.Jour}
+			if p := e.Preuve; p != nil {
+				va.Numero, va.Empreinte, va.LienOTS = p.Numero, p.Empreinte.String(), ancrage.LienPreuve(e.Jour)
+				if bs := p.Blocs(); len(bs) > 0 {
+					va.Bloc = int64(bs[0])
+				}
+				v.Ancrables = true
+			}
+			for _, a := range e.Archives {
+				va.Archives = append(va.Archives, VueArchive{Cle: "journal.ancrage.archive." + string(a.Cible), Lien: a.Lien})
+			}
+			v.Ancrages = append(v.Ancrages, va)
+		}
+	}
 	d.Journal = v
 	s.rendre(w, r, http.StatusOK, "journal", d)
 }
@@ -158,4 +213,76 @@ func (s *Serveur) journalExport(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Content-Disposition", `inline; filename="journal.json"`)
 	_, _ = w.Write(buf.Bytes())
+}
+
+// preuveOTS sert la preuve OpenTimestamps d'un jour (dernière révision),
+// /journal/ancrages/AAAA-MM-JJ.ots.
+func (s *Serveur) preuveOTS(w http.ResponseWriter, r *http.Request) {
+	nom := r.PathValue("fichier")
+	j, ok := strings.CutSuffix(nom, ".ots")
+	jour, err := time.ParseInLocation(time.DateOnly, j, time.UTC)
+	if !ok || err != nil {
+		s.introuvable(w, r)
+		return
+	}
+	p, err := s.opt.Ancrages.LirePreuve(r.Context(), jour)
+	if err != nil {
+		s.opt.Journal.Error("lecture d'une preuve OpenTimestamps", "erreur", err)
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	if p == nil {
+		s.introuvable(w, r)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("Cache-Control", "no-cache") // remplacée par sa mise à niveau
+	h.Set("Content-Disposition", `attachment; filename="diguee-journal-`+jour.Format(time.DateOnly)+`.ots"`)
+	_, _ = w.Write(p.OTS)
+}
+
+// ExportAncrage est un jour de /journal/ancrages.json.
+type ExportAncrage struct {
+	Jour      string            `json:"jour"`
+	Entree    int64             `json:"entree,omitempty"`
+	Empreinte string            `json:"empreinte,omitempty"`
+	Preuve    string            `json:"preuve_ots,omitempty"`
+	Bitcoin   []uint64          `json:"blocs_bitcoin,omitempty"`
+	Archives  map[string]string `json:"archives,omitempty"`
+}
+
+// MaxAncragesExport borne la liste exportée (plus de deux ans de jours).
+const MaxAncragesExport = 1000
+
+func (s *Serveur) ancragesJSON(w http.ResponseWriter, r *http.Request) {
+	etats, err := s.opt.Ancrages.Ancrages(r.Context(), MaxAncragesExport)
+	if err != nil {
+		s.opt.Journal.Error("export des ancrages", "erreur", err)
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	xs := []ExportAncrage{}
+	for _, e := range etats {
+		x := ExportAncrage{Jour: e.Jour.Format(time.DateOnly)}
+		if p := e.Preuve; p != nil {
+			x.Entree, x.Empreinte, x.Preuve, x.Bitcoin = p.Numero, p.Empreinte.String(), ancrage.LienPreuve(e.Jour), p.Blocs()
+		}
+		for _, a := range e.Archives {
+			if x.Archives == nil {
+				x.Archives = map[string]string{}
+			}
+			x.Archives["/"+string(a.Cible)] = a.Lien
+		}
+		xs = append(xs, x)
+	}
+	b, err := json.MarshalIndent(xs, "", "  ")
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("Cache-Control", "no-cache")
+	_, _ = w.Write(append(b, '\n'))
 }

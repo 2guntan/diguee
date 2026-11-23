@@ -22,6 +22,9 @@
       {{- if $.AvecSMS}}
       <a href="/equipe/sms">{{t "equipe.nav.sms"}}</a>
       {{- end}}
+      {{- if $.AvecAncrage}}
+      <a href="/equipe/ancrage">{{t "equipe.nav.ancrage"}}</a>
+      {{- end}}
       {{- end}}
       <form class="en-ligne" method="post" action="/equipe/deconnexion">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">

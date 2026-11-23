@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base32"
+	"html"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -16,7 +17,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/base/basetest"
@@ -24,6 +27,7 @@ import (
 	"github.com/2guntan/diguee/internal/equipe"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
+	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/totp"
 	"github.com/2guntan/diguee/internal/web"
 )
@@ -101,7 +105,7 @@ func nouveauBanc(t *testing.T) *banc {
 	coupe := antifraude.NouveauCoupeCircuit(antifraude.OptionsCoupeCircuit{Facteur: 3, Plancher: 20, PlafondHoraire: 2,
 		Reactivation: time.Hour, Maintenant: hl.Maintenant, Journal: journal})
 	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal,
-		CoupeCircuitSMS: coupe})
+		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,6 +775,7 @@ func TestPagesEquipeCompletesSansScript(t *testing.T) {
 	pages["membres"] = c.get("/equipe/membres")
 	pages["audit"] = c.get("/equipe/audit")
 	pages["sms actif"] = c.get("/equipe/sms")
+	pages["ancrage"] = c.get("/equipe/ancrage")
 	for b.coupe.Autoriser() {
 	}
 	pages["sms suspendu"] = c.get("/equipe/sms")
@@ -865,5 +870,80 @@ func TestReactivationManuelleDuSMS(t *testing.T) {
 	if _, err := b.base.Pool.Exec(context.Background(), `INSERT INTO audit_equipe (numero, jour, type, acteur)
 		VALUES (1001, current_date, 'connexion', $1)`, admin.ID); err == nil {
 		t.Error("une connexion sans cible doit être refusée")
+	}
+}
+
+// tableauFixe est un état d'ancrage préparé pour les tests.
+type tableauFixe struct{ t ancrage.Tableau }
+
+func (f tableauFixe) Tableau(context.Context) (*ancrage.Tableau, error) { return &f.t, nil }
+
+const empreinteAncree = "5e3c0f9a2b7d41c8e6f0a9b3d2c1e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1"
+
+func tableauDeTest() tableauFixe {
+	var e journal.Empreinte
+	copy(e[:], []byte(empreinteAncree)) // seuls les octets comptent ici
+	lundi := time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)
+	return tableauFixe{ancrage.Tableau{
+		Mode: "reel",
+		Semaines: []ancrage.Semaine{{Lundi: lundi, Jour: lundi, Numero: 1234, Empreinte: empreinteAncree,
+			LienJournal: "https://consultation.diguee.sn/journal", LienPreuve: "https://consultation.diguee.sn/journal/ancrages/2026-11-23.ots"}},
+		Jours: []ancrage.Etat{
+			{Jour: lundi, Preuve: &ancrage.Preuve{Jour: lundi, Numero: 1234, Empreinte: e, Calendriers: 3},
+				Archives: []ancrage.Archive{{Jour: lundi, Cible: ancrage.CibleJournal, Lien: "https://web.archive.org/web/20261123061500/https://consultation.diguee.sn/journal"}}},
+			{Jour: lundi.AddDate(0, 0, -1)},
+		},
+		Echecs: []ancrage.Echec{{Service: ancrage.ServiceArchive, Quand: lundi.Add(6 * time.Hour), Erreur: "archive.org : statut 502", Essais: 3}},
+	}}
+}
+
+// Le texte hebdomadaire pour X est affiché aux seuls administrateurs, prêt à
+// copier ; la plateforme ne publie rien elle-même (aucun formulaire).
+func TestTexteHebdomadairePourX(t *testing.T) {
+	b := nouveauBanc(t)
+	admin := b.creer(t, "admin", equipe.Administrateur)
+	redac := b.creer(t, "redac", equipe.Redacteur, equipe.Relecteur)
+	ca, cr := b.client(t), b.client(t)
+	ca.connecterCompte(admin)
+	cr.connecterCompte(redac)
+	if p := cr.get("/equipe/ancrage"); p.statut != http.StatusForbidden {
+		t.Fatalf("page d'ancrage pour un non-administrateur : %d", p.statut)
+	}
+	if strings.Contains(cr.get("/equipe/").corps, `href="/equipe/ancrage"`) {
+		t.Error("lien vers l'ancrage montré à un non-administrateur")
+	}
+	if !strings.Contains(ca.get("/equipe/").corps, `href="/equipe/ancrage"`) {
+		t.Error("lien vers l'ancrage absent pour un administrateur")
+	}
+	p := ca.get("/equipe/ancrage")
+	c := html.UnescapeString(p.corps)
+	if p.statut != http.StatusOK {
+		t.Fatalf("statut %d", p.statut)
+	}
+	debut := strings.Index(c, "<textarea")
+	fin := strings.Index(c, "</textarea>")
+	if debut < 0 || fin < debut {
+		t.Fatal("texte pour X absent")
+	}
+	texteX := c[strings.Index(c[debut:], ">")+debut+1 : fin]
+	for _, attendu := range []string{"Journal public de Diguee, 23 novembre 2026", "nº\u00a01\u202f234", empreinteAncree,
+		"https://consultation.diguee.sn/journal\n", "https://consultation.diguee.sn/journal/ancrages/2026-11-23.ots"} {
+		if !strings.Contains(texteX, attendu) {
+			t.Errorf("texte pour X sans %q : %q", attendu, texteX)
+		}
+	}
+	// Moins de 280 caractères, chaque adresse comptant pour 23 comme sur X.
+	sansLiens := regexp.MustCompile(`https://\S+`).ReplaceAllString(texteX, strings.Repeat("x", 23))
+	if n := utf8.RuneCountInString(sansLiens); n > 280 {
+		t.Errorf("texte pour X trop long : %d caractères", n)
+	}
+	for _, attendu := range []string{"Semaine du 23 novembre 2026", "archive.org : statut 502", "3 calendrier(s)",
+		"en attente du bloc Bitcoin", "pas encore obtenue", "pas encore déposée", "/journal"} {
+		if !strings.Contains(c, attendu) {
+			t.Errorf("page d'ancrage sans %q", attendu)
+		}
+	}
+	if strings.Contains(c, "<form class=\"formulaire\"") || strings.Contains(c, "method=\"post\" action=\"/equipe/ancrage") {
+		t.Error("la page ne doit rien publier")
 	}
 }

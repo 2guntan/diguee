@@ -1,7 +1,9 @@
 package web
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/journal"
@@ -157,5 +160,118 @@ func TestTypesDuJournalTraduits(t *testing.T) {
 		if !fr.Existe("journal.type." + string(ty)) {
 			t.Errorf("type %s sans libellé dans le catalogue fr", ty)
 		}
+	}
+}
+
+// ancragesFixes sert des ancrages préparés pour les tests.
+type ancragesFixes struct{ etats []ancrage.Etat }
+
+func (a ancragesFixes) Ancrages(_ context.Context, limite int) ([]ancrage.Etat, error) {
+	return a.etats[:min(limite, len(a.etats))], nil
+}
+
+func (a ancragesFixes) LirePreuve(_ context.Context, jour time.Time) (*ancrage.Preuve, error) {
+	for _, e := range a.etats {
+		if e.Jour.Equal(jour) {
+			return e.Preuve, nil
+		}
+	}
+	return nil, nil
+}
+
+// preuveDeTest construit une preuve .ots valide (faux calendriers), complétée
+// d'une attestation Bitcoin si bloc > 0.
+func preuveDeTest(t *testing.T, jour time.Time, e journal.Entree, bloc uint64) *ancrage.Preuve {
+	t.Helper()
+	f := &ancrage.Fichier{OpFichier: ancrage.OpSHA256, Condensat: e.Empreinte[:], Horodatage: &ancrage.Horodatage{Message: e.Empreinte[:]}}
+	for _, nom := range []string{"a", "b"} {
+		h, err := ancrage.FauxCalendrier{Nom: nom}.Soumettre(context.Background(), e.Empreinte[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Horodatage.Fusionner(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if bloc > 0 {
+		f.Horodatage.Feuilles()[0].Noeud.Attester(ancrage.Bitcoin(bloc))
+	}
+	ots, err := f.Encoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &ancrage.Preuve{Jour: jour, Numero: e.Numero, Empreinte: e.Empreinte, OTS: ots, Calendriers: 2, Bitcoin: bloc > 0}
+}
+
+// /journal montre les derniers ancrages (preuve .ots, liens archive.org) ;
+// les preuves sont servies telles quelles, et la liste complète en JSON.
+func TestAncragesSurLeJournal(t *testing.T) {
+	_, j := serveurJournal(t, EntreesParPage+3)
+	es, _ := j.Toutes(context.Background())
+	var etats []ancrage.Etat
+	for i := range 9 {
+		jour := time.Date(2026, 11, 23-i, 0, 0, 0, 0, time.UTC)
+		e := ancrage.Etat{Jour: jour, Preuve: preuveDeTest(t, jour, es[len(es)-1-i], uint64(870000*min(1, i)+i)), Archives: []ancrage.Archive{
+			{Jour: jour, Cible: ancrage.CibleJournal, Lien: "https://web.archive.org/web/202611" + strings.Repeat("0", 8) + "/https://consultation.diguee.sn/journal"},
+			{Jour: jour, Cible: ancrage.CibleExport, Lien: "https://web.archive.org/web/202611" + strings.Repeat("1", 8) + "/https://consultation.diguee.sn/journal.json"},
+		}}
+		etats = append(etats, e)
+	}
+	etats = append(etats, ancrage.Etat{Jour: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}) // archives seules, sans preuve
+	cfg, _ := config.Charger(func(k string) string {
+		return map[string]string{"DIGUEE_POSTGRES_URL": "postgres://localhost/diguee"}[k]
+	})
+	cs, _ := i18n.Charger()
+	s, err := Nouveau(Options{Config: cfg, Catalogues: cs, Publications: compteurFixe{}, Version: "v0.0.0-test",
+		SHA256: strings.Repeat("ab", 32), Journal: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		JournalPublic: j, Ancrages: ancragesFixes{etats}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, corps := get(t, s, "/journal")
+	c := texte(corps)
+	for _, attendu := range []string{
+		"Ancrage hors de nos serveurs", "23 novembre 2026", `href="/journal/ancrages/2026-11-23.ots"`,
+		"entrée nº\u00a053", es[len(es)-1].Empreinte.String(), "en attente de son bloc Bitcoin",
+		"inscrite dans le bloc Bitcoin nº\u00a0" + cs.Choisir("fr").Nombre(870001), "page archivée sur archive.org", "export archivé sur archive.org",
+		`href="https://web.archive.org/web/20261100000000/https://consultation.diguee.sn/journal"`,
+		ancrage.CommandeVerification[:20], "ots verify -d", `href="/journal/ancrages.json"`,
+	} {
+		if !strings.Contains(c, attendu) && !strings.Contains(corps, attendu) {
+			t.Errorf("/journal ne contient pas %q", attendu)
+		}
+	}
+	if strings.Contains(c, "16 novembre 2026") || !strings.Contains(c, "17 novembre 2026") {
+		t.Errorf("plus de %d jours affichés", AncragesAffiches)
+	}
+	_, css := get(t, s, "/statique/diguee.css")
+	if res.StatusCode != http.StatusOK || len(corps)+len(css) >= 100*1024 || strings.Contains(corps, "⟦") || strings.Contains(corps, "%!") {
+		t.Fatalf("/journal : statut %d, %d octets", res.StatusCode, len(corps)+len(css))
+	}
+
+	res, ots := get(t, s, "/journal/ancrages/2026-11-22.ots")
+	if res.StatusCode != http.StatusOK || ots != string(etats[1].Preuve.OTS) ||
+		!strings.Contains(res.Header.Get("Content-Disposition"), "diguee-journal-2026-11-22.ots") {
+		t.Fatalf(".ots : statut %d, %s", res.StatusCode, res.Header)
+	}
+	f, err := ancrage.LireFichier([]byte(ots))
+	if err != nil || !bytes.Equal(f.Condensat, etats[1].Preuve.Empreinte[:]) {
+		t.Fatalf(".ots servi illisible : %v", err)
+	}
+	for _, p := range []string{"/journal/ancrages/2026-11-01.ots", "/journal/ancrages/2025-01-01.ots",
+		"/journal/ancrages/2026-11-23.txt", "/journal/ancrages/hier.ots"} {
+		if res, _ := get(t, s, p); res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s : statut %d", p, res.StatusCode)
+		}
+	}
+
+	res, js := get(t, s, "/journal/ancrages.json")
+	var liste []ExportAncrage
+	if err := json.Unmarshal([]byte(js), &liste); err != nil || res.StatusCode != http.StatusOK || len(liste) != 10 {
+		t.Fatalf("ancrages.json : %v, %d", err, len(liste))
+	}
+	if l := liste[1]; l.Jour != "2026-11-22" || l.Preuve != "/journal/ancrages/2026-11-22.ots" || l.Entree != es[len(es)-2].Numero ||
+		len(l.Bitcoin) != 1 || l.Archives["/journal.json"] == "" || liste[9].Preuve != "" {
+		t.Errorf("ancrages.json : %+v", liste[:2])
 	}
 }
