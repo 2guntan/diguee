@@ -155,7 +155,7 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
    - Il faut utiliser **RS256** : selon la RFC 8017, PKCS#1 v1.5 est déterministe, alors que PSS est aléatoire et donc inutilisable pour l'empreinte.
    - Un SDK Go officiel existe (`github.com/ovh/okms-sdk-go`), et la permission requise est `kms:serviceKey/sign`.
    - **Reste à faire** : un test réel sur un compte d'essai, où le même numéro signé deux fois doit donner la même signature. Le porteur doit d'abord ouvrir le compte.
-2. **Tranches d'âge et thèmes.** Un brouillon est à valider par le porteur ou par l'institut de sondage.
+2. **Tranches d'âge et thèmes** : brouillon **validé par le porteur le 23/11/2026**.
    - Âge : 18-24, 25-34, 35-49, 50-64, 65 ans et plus. Il faut avoir au moins 18 ans, l'âge du vote. Ces tranches se recomposent à partir des tranches quinquennales de l'ANSD.
    - Thèmes (choisir 3) : emploi des jeunes ; coût de la vie ; santé ; éducation ; justice et lutte contre la corruption ; agriculture, élevage et pêche ; eau, électricité et assainissement ; logement ; sécurité ; ressources naturelles (pétrole, gaz, mines) ; transports et routes. Pas de champ « autre ».
 3. **Préfixes mobiles.**
