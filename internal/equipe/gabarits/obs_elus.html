@@ -1,0 +1,52 @@
+{{define "titre"}}{{t "equipe.obs.elus"}}{{end}}
+{{define "contenu"}}
+    <p><a href="/equipe/observatoire">{{t "equipe.obs.retour"}}</a></p>
+    <h1 class="display">{{t "equipe.obs.elus"}}</h1>
+    {{- template "obs_messages" .}}
+    {{- with .Obs}}
+    {{- range .Elus}}
+    <div class="entree">
+      <h3>{{.Nom}}</h3>
+      <dl class="params">
+        <div><dt>{{t "equipe.obs.elu.fonction"}}</dt><dd>{{.Fonction}}</dd></div>
+        <div><dt>{{t "equipe.obs.elu.mandat"}}</dt><dd>{{tf "obs.mandat" (jour .Mandat.Debut) (jour .Mandat.Fin)}}</dd></div>
+        {{- if .ContactOfficiel}}
+        <div><dt>{{t "equipe.obs.elu.contact"}}</dt><dd>{{.ContactOfficiel}}</dd></div>
+        {{- end}}
+        <div><dt>{{t "equipe.obs.saisie"}}</dt><dd>{{tf "equipe.obs.saisi_par" .Saisi.ParNom (jour .Saisi.Le)}}</dd></div>
+      </dl>
+    </div>
+    {{- else}}
+    <p class="muted">{{t "equipe.obs.elus.aucun"}}</p>
+    {{- end}}
+    {{- end}}
+    {{- if a .Membre "redacteur"}}
+    <h2>{{t "equipe.obs.elus.ajouter"}}</h2>
+    <p class="note">{{t "equipe.obs.ajout_seul"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/elus">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="champ">
+        <label for="nom">{{t "equipe.obs.elu.nom"}}</label>
+        <input id="nom" name="nom" type="text" maxlength="200" required value="{{index .Obs.Saisie "nom"}}">
+      </div>
+      <div class="champ">
+        <label for="fonction">{{t "equipe.obs.elu.fonction"}}</label>
+        <input id="fonction" name="fonction" type="text" maxlength="200" required value="{{index .Obs.Saisie "fonction"}}">
+      </div>
+      <div class="champ">
+        <label for="mandat_debut">{{t "equipe.obs.elu.mandat_debut"}}</label>
+        <input id="mandat_debut" name="mandat_debut" type="date" required value="{{index .Obs.Saisie "mandat_debut"}}">
+      </div>
+      <div class="champ">
+        <label for="mandat_fin">{{t "equipe.obs.elu.mandat_fin"}}</label>
+        <input id="mandat_fin" name="mandat_fin" type="date" required value="{{index .Obs.Saisie "mandat_fin"}}">
+      </div>
+      <div class="champ">
+        <label for="contact">{{t "equipe.obs.elu.contact"}}</label>
+        <textarea id="contact" name="contact" maxlength="500">{{index .Obs.Saisie "contact"}}</textarea>
+        <p class="aide">{{t "equipe.obs.elu.contact.aide"}}</p>
+      </div>
+      <button class="btn" type="submit">{{t "equipe.obs.enregistrer"}}</button>
+    </form>
+    {{- end}}
+{{end}}

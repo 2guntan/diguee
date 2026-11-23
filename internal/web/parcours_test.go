@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -30,10 +31,12 @@ import (
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
+	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
+	"github.com/2guntan/diguee/internal/stockage"
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/whatsapp"
 )
@@ -1024,5 +1027,92 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 	}
 	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 1 || !strings.Contains(strings.Join(lj[0], "\t"), "publication_quotidienne") {
 		t.Errorf("journal public après publication : %d entrée(s)", len(lj))
+	}
+
+	// Ticket #13 : l'observatoire. Ses tables ne demandent aucune exception
+	// de schéma : leurs dates sont au jour (actes publics de l'équipe, jamais
+	// d'un participant), leurs identifiants sans séquence. Seule exception :
+	// les données de ces tables, des textes publics saisis par l'équipe (une
+	// citation peut contenir « 10:30 »), qui ne viennent jamais d'un envoi.
+	verifierObservatoireT1(t, b.base, b.schema, numeros)
+}
+
+// verifierObservatoireT1 publie un statut de l'observatoire, puis vérifie
+// le dump : tables de l'observatoire présentes, sans colonne plus fine que
+// le jour, et rien d'un participant dedans.
+func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, numeros []string) {
+	t.Helper()
+	ctx := context.Background()
+	for i, id := range []string{"00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b"} {
+		if _, err := b.Pool.Exec(ctx, `INSERT INTO membre (id, identifiant, nom, roles, mot_de_passe, totp_secret_chiffre)
+			VALUES ($1, $2, $2, ARRAY['redacteur', 'relecteur'], 'pbkdf2-sha256$x', '\x00')`, id, fmt.Sprintf("membre%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, m := "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b"
+	d, err := stockage.NouveauDossier(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := observatoire.NouveauService(b, d, 1<<20, nil)
+	jour := func(s string) time.Time { j, _ := time.Parse(time.DateOnly, s); return j }
+	elu, err := o.SaisirElu(ctx, a, observatoire.SaisieElu{Nom: "Élu", Fonction: "Maire",
+		Mandat: observatoire.Mandat{Debut: jour("2022-01-01"), Fin: jour("2027-01-01")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := o.SaisirSource(ctx, a, observatoire.SaisieSource{URL: "https://exemple.sn/d", Titre: "Discours de 10:30",
+		Date: jour("2024-04-02"), Fichier: []byte("%PDF-1.4")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng, err := o.SaisirEngagement(ctx, a, observatoire.SaisieEngagement{Elu: elu, Citation: "Dix écoles.",
+		DateDeclaration: jour("2024-04-02"), Echeance: jour("2026-12-31"), Sources: []int64{src.ID}})
+	if err == nil {
+		err = o.ValiderEngagement(ctx, m, eng)
+	}
+	st, err2 := o.RedigerStatut(ctx, a, eng, observatoire.Tenu, "Ouvertes.", []int64{src.ID})
+	if err = errors.Join(err, err2); err == nil {
+		err = errors.Join(o.Proposer(ctx, a, st), o.Valider(ctx, m, st))
+	}
+	if err == nil {
+		_, err = o.Publier(ctx, m, st)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump := pgDump(t, sc)
+	tables := []string{"elu", "source", "engagement", "engagement_source", "engagement_validation", "statut",
+		"statut_preuve", "statut_proposition", "statut_validation", "statut_rejet", "statut_publication"}
+	donnees := regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")
+	donnees = regexp.MustCompile(`(?s)CREATE TABLE \S+\.journal_public \(.*?\n\);\n`).ReplaceAllString(donnees, "")
+	donnees = regexp.MustCompile(`(?s)COPY \S+\.journal_public .*?\n\\\.\n`).ReplaceAllString(donnees, "")
+	for _, table := range tables {
+		creation := regexp.MustCompile(`(?s)CREATE TABLE \S+\.` + table + ` \(.*?\n\);\n`).FindString(dump)
+		if creation == "" {
+			t.Errorf("table %s absente du dump", table)
+		}
+		for _, motif := range []string{`(?i)\btimestamp`, `(?i)\btime\b`, `(?i)\binterval\b`, `(?i)\bserial\b`, `(?i)nextval`} {
+			if m := regexp.MustCompile(motif).FindString(creation); m != "" {
+				t.Errorf("table %s : %q", table, m)
+			}
+		}
+		_, lignes := lignesCopy(t, dump, table)
+		for _, l := range lignes {
+			for _, num := range numeros {
+				if strings.Contains(strings.Join(l, "\t"), num[4:]) {
+					t.Fatalf("table %s : contient un numéro", table)
+				}
+			}
+		}
+		donnees = regexp.MustCompile(`(?s)COPY \S+\.`+table+` .*?\n\\\.\n`).ReplaceAllString(donnees, "")
+	}
+	for _, motif := range []string{`\d{1,2}:\d{2}`, `(?i)\btimestamp`, `(?i)\btime\b`, `(?i)\binterval\b`, `(?i)\bserial\b`, `(?i)nextval`} {
+		if m := regexp.MustCompile(motif).FindString(donnees); m != "" {
+			t.Errorf("dump avec l'observatoire : horodatage ou séquence %q", m)
+		}
+	}
+	if _, lj := lignesCopy(t, dump, "journal_public"); len(lj) != 2 || !strings.Contains(strings.Join(lj[1], "\t"), "statut_publie") {
+		t.Errorf("journal public après la publication d'un statut : %d entrée(s)", len(lj))
 	}
 }

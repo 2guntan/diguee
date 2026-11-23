@@ -1,0 +1,65 @@
+{{define "titre"}}{{t "obs.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "obs.titre"}}</h1>
+    <p class="lead">{{t "obs.chapeau"}}</p>
+    <p>{{t "obs.regles"}}</p>
+    {{- with .Observatoire}}
+    <form class="filtres" method="get" action="/observatoire">
+      <div class="champ">
+        <label for="elu">{{t "obs.filtre.elu"}}</label>
+        <select id="elu" name="elu">
+          <option value="">{{t "obs.filtre.tous"}}</option>
+          {{- range .Liste.Elus}}
+          <option value="{{.ID}}"{{if eq .ID $.Observatoire.Filtre.Elu}} selected{{end}}>{{.Nom}} · {{.Fonction}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <div class="champ">
+        <label for="mandat">{{t "obs.filtre.mandat"}}</label>
+        <select id="mandat" name="mandat">
+          <option value="">{{t "obs.filtre.tous"}}</option>
+          {{- range .Liste.Mandats}}
+          <option value="{{.Cle}}"{{if eq .Cle $.Observatoire.Mandat}} selected{{end}}>{{tf "obs.mandat" (date .Debut) (date .Fin)}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <div class="champ">
+        <label for="statut">{{t "obs.filtre.statut"}}</label>
+        <select id="statut" name="statut">
+          <option value="">{{t "obs.filtre.tous"}}</option>
+          {{- range .Valeurs}}
+          <option value="{{.}}"{{if eq . $.Observatoire.Filtre.Valeur}} selected{{end}}>{{valeur .}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <button class="btn secondaire" type="submit">{{t "obs.filtre.bouton"}}</button>
+    </form>
+    {{- if .Liste.Engagements}}
+    <p>{{pluriel "obs.liste.total" .Liste.Total}}</p>
+    {{- range .Liste.Engagements}}
+    <article class="entree">
+      <h3><a href="/observatoire/engagements/{{.ID}}">{{.Elu.Nom}}</a> · {{.Elu.Fonction}}</h3>
+      <blockquote>{{extrait .Citation}}</blockquote>
+      <dl class="params">
+        <div><dt>{{t "obs.statut"}}</dt><dd>{{with .Dernier}}<span class="valeur">{{valeur .Valeur}}</span> · {{tf "obs.publie_le" (date .Publication.Le)}}{{end}}</dd></div>
+        <div><dt>{{t "obs.echeance"}}</dt><dd>{{date .Echeance}}</dd></div>
+      </dl>
+      <p><a href="/observatoire/engagements/{{.ID}}">{{t "obs.voir_fiche"}}</a></p>
+    </article>
+    {{- end}}
+    {{- if gt .Pages 1}}
+    <nav class="pagination" aria-label="{{t "obs.page.libelle"}}">
+      {{- if .Precedente}}<a href="{{.Precedente}}">{{t "obs.page.precedente"}}</a>{{end}}
+      <span>{{tf "obs.page.position" (nombre .Page) (nombre .Pages)}}</span>
+      {{- if .Suivante}}<a href="{{.Suivante}}">{{t "obs.page.suivante"}}</a>{{end}}
+    </nav>
+    {{- end}}
+    {{- else}}
+    <p>{{t "obs.liste.aucun"}}</p>
+    {{- end}}
+    {{- end}}
+  </div>
+</section>
+{{end}}

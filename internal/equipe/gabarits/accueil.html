@@ -7,5 +7,7 @@
       <div><dt>{{t "equipe.membre.roles"}}</dt><dd>{{range $i, $r := .Membre.Roles}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{role $r}}{{end}}</dd></div>
     </dl>
     <p class="note">{{t "equipe.accueil.session"}}</p>
-    <p class="note">{{t "equipe.accueil.a_venir"}}</p>
+    {{- if and .AvecObservatoire (or (a .Membre "redacteur") (a .Membre "relecteur"))}}
+    <p><a class="btn" href="/equipe/observatoire">{{t "equipe.accueil.observatoire"}}</a></p>
+    {{- end}}
 {{end}}

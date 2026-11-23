@@ -10,17 +10,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/observatoire"
 )
 
 //go:embed gabarits/*.html
 var fichiersGabarits embed.FS
 
-var pagesEquipe = []string{"connexion", "accueil", "membres", "acces", "audit", "interdit", "introuvable", "sms", "ancrage"}
+var pagesEquipe = []string{"connexion", "accueil", "membres", "acces", "audit", "interdit", "introuvable", "sms", "ancrage",
+	"obs_tableau", "obs_elus", "obs_sources", "obs_nouvel_engagement", "obs_engagement", "obs_statut"}
 
 // nomCookieConnexion porte le jeton CSRF du formulaire de connexion, avant
 // toute session (protection contre la connexion forcée).
@@ -43,6 +46,13 @@ type OptionsEspace struct {
 	// de l'ancrage extérieur du journal public et texte hebdomadaire prêt à
 	// publier sur X (ticket #12). La plateforme ne publie jamais elle-même.
 	Ancrage TableauAncrage
+	// Observatoire sert /equipe/observatoire (rédacteurs et relecteurs)
+	// s'il est fourni : saisie des élus, des sources et des engagements,
+	// circuit des statuts (ticket #13).
+	Observatoire *observatoire.Service
+	// ServirArchive sert une copie archivée (web.ServirArchive), pour que les
+	// relecteurs relisent les fichiers avant validation.
+	ServirArchive func(w http.ResponseWriter, r *http.Request, introuvable func())
 }
 
 // TableauAncrage donne l'état des ancrages. Implémenté par ancrage.Ancreur.
@@ -87,8 +97,11 @@ func NouvelEspace(o OptionsEspace) (*Espace, error) {
 	e := &Espace{opt: o, gabarits: map[string]*template.Template{}, mux: http.NewServeMux()}
 	ref := o.Catalogues.Choisir(i18n.Reference)
 	for _, p := range pagesEquipe {
-		g, err := template.New(p).Funcs(fonctions(ref)).
-			ParseFS(fichiersGabarits, "gabarits/base.html", "gabarits/"+p+".html")
+		fichiers := []string{"gabarits/base.html", "gabarits/" + p + ".html"}
+		if strings.HasPrefix(p, "obs_") {
+			fichiers = append(fichiers, "gabarits/obs_commun.html")
+		}
+		g, err := template.New(p).Funcs(fonctions(ref)).ParseFS(fichiersGabarits, fichiers...)
 		if err != nil {
 			return nil, fmt.Errorf("gabarit équipe %s : %w", p, err)
 		}
@@ -114,6 +127,9 @@ func NouvelEspace(o OptionsEspace) (*Espace, error) {
 	if o.Ancrage != nil {
 		e.Gerer("GET /equipe/ancrage", e.pageAncrage, Administrateur)
 	}
+	if o.Observatoire != nil {
+		e.monterObservatoire()
+	}
 	e.mux.HandleFunc("/equipe/", func(w http.ResponseWriter, r *http.Request) {
 		e.rendre(w, http.StatusNotFound, "introuvable", Donnees{})
 	})
@@ -125,7 +141,13 @@ func (e *Espace) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Robots-Tag", "noindex, nofollow")
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	limite := int64(64 << 10)
+	if e.opt.Observatoire != nil && r.Method == http.MethodPost && r.URL.Path == cheminSources {
+		// Téléversement d'une copie archivée : la taille maximale du
+		// fichier, plus les autres champs.
+		limite = e.opt.Observatoire.TailleMax() + 64<<10
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limite)
 	e.mux.ServeHTTP(w, r)
 }
 
@@ -158,6 +180,14 @@ func (e *Espace) Gerer(motif string, h http.HandlerFunc, roles ...Role) {
 		}
 		d := Donnees{Membre: &m, CSRF: csrf}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if err := lireFormulaire(r); err != nil {
+				var trop *http.MaxBytesError
+				if errors.As(err, &trop) {
+					d.Erreur = "equipe.erreur.trop_gros"
+					e.rendre(w, http.StatusRequestEntityTooLarge, "interdit", d)
+					return
+				}
+			}
 			if !origineSure(r) || !egal(r.PostFormValue("csrf"), csrf) {
 				d.Erreur = "equipe.erreur.csrf"
 				e.rendre(w, http.StatusForbidden, "interdit", d)
@@ -172,6 +202,16 @@ func (e *Espace) Gerer(motif string, h http.HandlerFunc, roles ...Role) {
 		ctx := context.WithValue(context.WithValue(r.Context(), cleMembre, m), cleCSRF, csrf)
 		h(w, r.WithContext(ctx))
 	})
+}
+
+// lireFormulaire lit le corps d'un formulaire, ordinaire ou multipart (le
+// téléversement d'une source), en mémoire : le corps est déjà borné par
+// ServeHTTP, aucun fichier temporaire n'est écrit.
+func lireFormulaire(r *http.Request) error {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		return r.ParseMultipartForm(1 << 40)
+	}
+	return r.ParseForm()
 }
 
 // origineSure refuse une requête envoyée depuis un autre site, d'après les
@@ -208,12 +248,16 @@ type Donnees struct {
 
 	AvecAncrage bool             // l'ancrage est servi : lien vers /equipe/ancrage
 	Ancrage     *ancrage.Tableau // page /equipe/ancrage
+
+	AvecObservatoire bool    // l'observatoire est servi : lien vers /equipe/observatoire
+	Obs              *VueObs // pages /equipe/observatoire
 }
 
 func (e *Espace) rendre(w http.ResponseWriter, statut int, page string, d Donnees) {
 	d.Roles = Roles
 	d.AvecSMS = e.opt.CoupeCircuitSMS != nil
 	d.AvecAncrage = e.opt.Ancrage != nil
+	d.AvecObservatoire = e.opt.Observatoire != nil
 	var buf bytes.Buffer
 	if err := e.gabarits[page].ExecuteTemplate(&buf, "base", d); err != nil {
 		e.erreurInterne(w, "rendu de page équipe", err)
@@ -469,5 +513,9 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 		"role":   func(r Role) string { return c.T("equipe.role." + string(r)) },
 		"action": func(a TypeAction) string { return c.T("equipe.action." + string(a)) },
 		"a":      func(m Membre, r Role) bool { return m.A(r) },
+		"valeur": func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
+		"etape":  func(x observatoire.Etape) string { return c.T("obs.etape." + string(x)) },
+		"taille": func(n int64) string { return c.F("format.ko", c.Nombre((n+1023)/1024)) },
+		"mo":     func(n int64) string { return c.Nombre(n >> 20) },
 	}
 }

@@ -18,6 +18,9 @@
   <div class="wrap">
     <a class="logo" href="/" aria-label="{{t "nav.accueil"}}">{{template "logo" 30}}<span>{{t "site.marque"}}</span></a>
     <nav aria-label="{{t "nav.libelle"}}">
+      {{- if .AvecObservatoire}}
+      <a href="/observatoire">{{t "nav.observatoire"}}</a>
+      {{- end}}
       <a href="/resultats">{{t "nav.resultats"}}</a>
       <a href="/methodologie">{{t "nav.methodologie"}}</a>
       <a href="/confidentialite">{{t "nav.confidentialite"}}</a>
@@ -35,7 +38,7 @@
       <p>{{t "pied.devise"}}</p>
     </div>
     <div class="links">
-      <div><a href="/resultats">{{t "nav.resultats"}}</a><a href="/methodologie">{{t "nav.methodologie"}}</a><a href="/confidentialite">{{t "nav.confidentialite"}}</a><a href="/journal">{{t "nav.journal"}}</a></div>
+      <div>{{if .AvecObservatoire}}<a href="/observatoire">{{t "nav.observatoire"}}</a>{{end}}<a href="/resultats">{{t "nav.resultats"}}</a><a href="/methodologie">{{t "nav.methodologie"}}</a><a href="/confidentialite">{{t "nav.confidentialite"}}</a><a href="/journal">{{t "nav.journal"}}</a></div>
       <p>{{tf "pied.cdp" .Config.NumeroCDP.Valeur}}</p>
       <p class="version">{{tf "pied.version" .Version}}<br>{{t "pied.sha256"}} <code>{{.SHA256}}</code></p>
     </div>

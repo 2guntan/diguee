@@ -1,0 +1,16 @@
+{{define "obs_ligne"}}
+    <p><a href="/equipe/observatoire/statuts/{{.Statut.ID}}">{{tf "equipe.obs.statut_n" .Statut.ID}}</a> · <span class="valeur">{{valeur .Statut.Valeur}}</span> · {{.Engagement.Elu.Nom}} · {{tf "equipe.obs.redige_par" .Statut.Redige.ParNom (jour .Statut.Redige.Le)}}</p>
+{{end}}
+
+{{define "obs_messages"}}
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
+    {{- if .Message}}
+    <p class="alerte" role="status">{{t .Message}}</p>
+    {{- end}}
+{{end}}
+
+{{define "obs_source"}}
+    <p><strong>{{.Titre}}</strong> · {{jour .Date}} · <a href="{{.URL}}" rel="nofollow noopener noreferrer">{{t "obs.source.origine"}}</a> · <a href="/equipe/observatoire/archives/{{.Archive}}.{{.Extension}}">{{tf "obs.source.archive" (t (print "obs.type." .Extension)) (taille .Taille)}}</a><br><span class="muted">{{tf "equipe.obs.source_n" .ID}} · {{t "obs.source.sha256"}}</span> <code class="empreinte">{{.Archive}}</code></p>
+{{end}}

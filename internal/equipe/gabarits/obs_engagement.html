@@ -1,0 +1,84 @@
+{{define "titre"}}{{t "equipe.obs.engagement.titre"}}{{end}}
+{{define "contenu"}}
+    <p><a href="/equipe/observatoire">{{t "equipe.obs.retour"}}</a></p>
+    {{- $m := .Membre}}{{$csrf := .CSRF}}
+    {{- with .Obs}}{{$obs := .}}{{with .Engagement}}
+    <h1 class="display">{{tf "equipe.obs.engagement_n" .ID}}</h1>
+    {{- template "obs_messages" $}}
+    <p class="lead">{{.Elu.Nom}} · {{.Elu.Fonction}} · {{tf "obs.mandat" (jour .Elu.Mandat.Debut) (jour .Elu.Mandat.Fin)}}</p>
+    <blockquote>{{.Citation}}</blockquote>
+    {{- if .Contexte}}<p>{{.Contexte}}</p>{{end}}
+    <dl class="params">
+      <div><dt>{{t "obs.fiche.declaration"}}</dt><dd>{{jour .DateDeclaration}}</dd></div>
+      <div><dt>{{t "obs.echeance"}}</dt><dd>{{jour .Echeance}}</dd></div>
+      <div><dt>{{t "equipe.obs.saisie"}}</dt><dd>{{tf "equipe.obs.saisi_par" .Cree.ParNom (jour .Cree.Le)}}</dd></div>
+      <div><dt>{{t "equipe.obs.validation"}}</dt><dd>{{with .Validation}}{{tf "equipe.obs.valide_par" .ParNom (jour .Le)}}{{else}}{{t "equipe.obs.engagement.a_valider"}}{{end}}</dd></div>
+    </dl>
+
+    <h2>{{t "obs.fiche.sources"}}</h2>
+    {{- range .Sources}}{{template "obs_source" .}}{{end}}
+    {{- if not .Validation}}
+    {{- if a $m "redacteur"}}
+    <form class="formulaire" method="post" action="/equipe/observatoire/engagements/{{.ID}}/sources">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="source">{{t "equipe.obs.engagement.ajouter_source"}}</label>
+        <select id="source" name="source" required>
+          <option value="">{{t "equipe.obs.choisir"}}</option>
+          {{- range $obs.Sources}}
+          <option value="{{.ID}}">{{tf "equipe.obs.source_n" .ID}} · {{.Titre}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <button class="btn secondaire" type="submit">{{t "equipe.obs.ajouter"}}</button>
+    </form>
+    {{- end}}
+    {{- if a $m "relecteur"}}
+    <h2>{{t "equipe.obs.engagement.valider"}}</h2>
+    {{- if eq .Cree.Par $m.ID}}
+    <p class="note">{{t "equipe.obs.quatre_yeux"}}</p>
+    {{- else}}
+    <p>{{t "equipe.obs.engagement.valider.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/engagements/{{.ID}}/valider">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn" type="submit">{{t "equipe.obs.engagement.valider.bouton"}}</button>
+    </form>
+    {{- end}}
+    {{- end}}
+    {{- end}}
+
+    <h2>{{t "equipe.obs.statuts"}}</h2>
+    {{- range .Statuts}}
+    <p><a href="/equipe/observatoire/statuts/{{.ID}}">{{tf "equipe.obs.statut_n" .ID}}</a> · <span class="valeur">{{valeur .Valeur}}</span> · {{etape .Etape}} · {{tf "equipe.obs.redige_par" .Redige.ParNom (jour .Redige.Le)}}</p>
+    {{- else}}
+    <p class="muted">{{t "equipe.obs.statuts.aucun"}}</p>
+    {{- end}}
+    {{- if and .Validation (a $m "redacteur")}}
+    <h2>{{t "equipe.obs.statut.rediger"}}</h2>
+    <p>{{t "equipe.obs.statut.rediger.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/engagements/{{.ID}}/statuts">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="valeur">{{t "obs.statut"}}</label>
+        <select id="valeur" name="valeur" required>
+          {{- range $obs.Valeurs}}
+          <option value="{{.}}"{{if eq (print .) (index $obs.Saisie "valeur")}} selected{{end}}>{{valeur .}}</option>
+          {{- end}}
+        </select>
+        <p class="aide">{{t "equipe.obs.statut.preavis.aide"}}</p>
+      </div>
+      <div class="champ">
+        <label for="explication">{{t "equipe.obs.statut.explication"}}</label>
+        <textarea id="explication" name="explication" maxlength="5000" required>{{index $obs.Saisie "explication"}}</textarea>
+      </div>
+      <fieldset class="champ">
+        <legend>{{t "obs.fiche.preuves"}}</legend>
+        {{- range $obs.Sources}}
+        <label class="choix"><input type="checkbox" name="preuves" value="{{.ID}}"> {{tf "equipe.obs.source_n" .ID}} · {{.Titre}}</label>
+        {{- end}}
+      </fieldset>
+      <button class="btn" type="submit">{{t "equipe.obs.statut.rediger.bouton"}}</button>
+    </form>
+    {{- end}}
+    {{- end}}{{end}}
+{{end}}

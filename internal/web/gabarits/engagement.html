@@ -1,0 +1,54 @@
+{{define "titre"}}{{t "obs.fiche.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    {{- with .Observatoire}}{{with .Fiche}}
+    <p class="kicker"><a href="/observatoire">{{t "obs.titre"}}</a></p>
+    <h1 class="display">{{.Elu.Nom}}</h1>
+    <p class="lead">{{.Elu.Fonction}} · {{tf "obs.mandat" (date .Elu.Mandat.Debut) (date .Elu.Mandat.Fin)}}</p>
+    <h2>{{t "obs.fiche.citation"}}</h2>
+    <blockquote>{{.Citation}}</blockquote>
+    <dl class="params">
+      <div><dt>{{t "obs.fiche.declaration"}}</dt><dd>{{date .DateDeclaration}}</dd></div>
+      <div><dt>{{t "obs.echeance"}}</dt><dd>{{date .Echeance}}</dd></div>
+      {{- with .Dernier}}
+      <div><dt>{{t "obs.statut"}}</dt><dd><span class="valeur">{{valeur .Valeur}}</span></dd></div>
+      {{- end}}
+    </dl>
+    {{- if .Contexte}}
+    <p>{{.Contexte}}</p>
+    {{- end}}
+
+    <h2>{{t "obs.fiche.sources"}}</h2>
+    {{- range .Sources}}{{template "source" .}}{{end}}
+
+    <h2>{{t "obs.fiche.historique"}}</h2>
+    <p>{{t "obs.fiche.historique.chapeau"}}</p>
+    <ol class="historique">
+    {{- range .Statuts}}
+      <li class="entree" id="statut-{{.ID}}">
+        <h3><span class="valeur">{{valeur .Valeur}}</span> · {{tf "obs.publie_le" (date .Publication.Le)}}</h3>
+        <p>{{.Explication}}</p>
+        <dl class="params">
+          <div><dt>{{t "obs.fiche.redige"}}</dt><dd>{{tf "obs.fiche.par_le" .Redige.ParNom (date .Redige.Le)}}</dd></div>
+          <div><dt>{{t "obs.fiche.valide"}}</dt><dd>{{tf "obs.fiche.par_le" .Validation.ParNom (date .Validation.Le)}}</dd></div>
+          <div><dt>{{t "obs.fiche.journal"}}</dt><dd><a href="/journal">{{tf "obs.fiche.entree" (nombre .Publication.JournalNumero)}}</a></dd></div>
+        </dl>
+        <p><strong>{{t "obs.fiche.preuves"}}</strong></p>
+        {{- range .Preuves}}{{template "source" .}}{{end}}
+      </li>
+    {{- end}}
+    </ol>
+    <p class="note">{{t "obs.fiche.correction"}}</p>
+    {{- end}}{{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "source"}}
+    <div class="source">
+      <p><strong>{{.Titre}}</strong> · {{date .Date}}</p>
+      <p><a href="{{.URL}}" rel="nofollow noopener noreferrer">{{t "obs.source.origine"}}</a> · <a href="/observatoire/archives/{{.Archive}}.{{.Extension}}">{{tf "obs.source.archive" (t (print "obs.type." .Extension)) (taille .Taille)}}</a></p>
+      <p class="empreintes">{{t "obs.source.sha256"}} <code class="empreinte">{{.Archive}}</code></p>
+    </div>
+{{end}}

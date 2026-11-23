@@ -1,0 +1,52 @@
+{{define "titre"}}{{t "equipe.obs.nouvel_engagement"}}{{end}}
+{{define "contenu"}}
+    <p><a href="/equipe/observatoire">{{t "equipe.obs.retour"}}</a></p>
+    <h1 class="display">{{t "equipe.obs.nouvel_engagement"}}</h1>
+    {{- template "obs_messages" .}}
+    <p>{{t "equipe.obs.engagement.regles"}}</p>
+    {{- if not (a .Membre "redacteur")}}
+    <p class="note">{{t "equipe.obs.reserve_redacteurs"}}</p>
+    {{- else if not .Obs.Elus}}
+    <p><a href="/equipe/observatoire/elus">{{t "equipe.obs.engagement.sans_elu"}}</a></p>
+    {{- else if not .Obs.Sources}}
+    <p><a href="/equipe/observatoire/sources">{{t "equipe.obs.engagement.sans_source"}}</a></p>
+    {{- else}}
+    {{- $saisie := .Obs.Saisie}}
+    <form class="formulaire" method="post" action="/equipe/observatoire/engagements">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="champ">
+        <label for="elu">{{t "equipe.obs.engagement.elu"}}</label>
+        <select id="elu" name="elu" required>
+          <option value="">{{t "equipe.obs.choisir"}}</option>
+          {{- range .Obs.Elus}}
+          <option value="{{.ID}}"{{if eq (print .ID) (index $saisie "elu")}} selected{{end}}>{{.Nom}} · {{.Fonction}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <div class="champ">
+        <label for="citation">{{t "equipe.obs.engagement.citation"}}</label>
+        <textarea id="citation" name="citation" maxlength="5000" required>{{index $saisie "citation"}}</textarea>
+        <p class="aide">{{t "equipe.obs.engagement.citation.aide"}}</p>
+      </div>
+      <div class="champ">
+        <label for="contexte">{{t "equipe.obs.engagement.contexte"}}</label>
+        <textarea id="contexte" name="contexte" maxlength="5000">{{index $saisie "contexte"}}</textarea>
+      </div>
+      <div class="champ">
+        <label for="date_declaration">{{t "obs.fiche.declaration"}}</label>
+        <input id="date_declaration" name="date_declaration" type="date" required value="{{index $saisie "date_declaration"}}">
+      </div>
+      <div class="champ">
+        <label for="echeance">{{t "obs.echeance"}}</label>
+        <input id="echeance" name="echeance" type="date" required value="{{index $saisie "echeance"}}">
+      </div>
+      <fieldset class="champ">
+        <legend>{{t "equipe.obs.engagement.sources"}}</legend>
+        {{- range .Obs.Sources}}
+        <label class="choix"><input type="checkbox" name="sources" value="{{.ID}}"> {{tf "equipe.obs.source_n" .ID}} · {{.Titre}}</label>
+        {{- end}}
+      </fieldset>
+      <button class="btn" type="submit">{{t "equipe.obs.enregistrer"}}</button>
+    </form>
+    {{- end}}
+{{end}}

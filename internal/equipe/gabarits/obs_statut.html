@@ -1,0 +1,87 @@
+{{define "titre"}}{{t "equipe.obs.statut.titre"}}{{end}}
+{{define "contenu"}}
+    {{- $m := .Membre}}{{$csrf := .CSRF}}
+    {{- with .Obs}}{{$obs := .}}{{$e := .Engagement}}{{with .Statut}}
+    <p><a href="/equipe/observatoire/engagements/{{$e.ID}}">{{tf "equipe.obs.retour_engagement" $e.ID}}</a></p>
+    <h1 class="display">{{tf "equipe.obs.statut_n" .ID}}</h1>
+    {{- template "obs_messages" $}}
+    <p class="lead">{{$e.Elu.Nom}} · {{$e.Elu.Fonction}}</p>
+    <blockquote>{{$e.Citation}}</blockquote>
+    <dl class="params">
+      <div><dt>{{t "obs.statut"}}</dt><dd><span class="valeur">{{valeur .Valeur}}</span></dd></div>
+      <div><dt>{{t "equipe.obs.etape"}}</dt><dd>{{etape .Etape}}</dd></div>
+      <div><dt>{{t "obs.fiche.redige"}}</dt><dd>{{tf "obs.fiche.par_le" .Redige.ParNom (jour .Redige.Le)}}</dd></div>
+      {{- with .Proposition}}<div><dt>{{t "obs.etape.propose"}}</dt><dd>{{jour .Le}}</dd></div>{{end}}
+      {{- with .Validation}}<div><dt>{{t "obs.fiche.valide"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}}</dd></div>{{end}}
+      {{- with .Rejet}}<div><dt>{{t "obs.etape.rejete"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}}</dd></div>{{end}}
+      {{- with .Publication}}<div><dt>{{t "obs.etape.publie"}}</dt><dd>{{tf "obs.fiche.par_le" .ParNom (jour .Le)}} · {{tf "obs.fiche.entree" (nombre .JournalNumero)}}</dd></div>{{end}}
+    </dl>
+    <h2>{{t "equipe.obs.statut.explication"}}</h2>
+    <p>{{.Explication}}</p>
+    {{- with .Rejet}}<p class="erreur">{{tf "equipe.obs.statut.motif_rejet" .Motif}}</p>{{end}}
+    <h2>{{t "obs.fiche.preuves"}}</h2>
+    {{- range .Preuves}}{{template "obs_source" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.statut.sans_preuve"}}</p>
+    {{- end}}
+
+    {{- if eq (print .Etape) "brouillon"}}
+    {{- if eq .Redige.Par $m.ID}}
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/preuves">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="source">{{t "equipe.obs.statut.ajouter_preuve"}}</label>
+        <select id="source" name="source" required>
+          <option value="">{{t "equipe.obs.choisir"}}</option>
+          {{- range $obs.Sources}}
+          <option value="{{.ID}}">{{tf "equipe.obs.source_n" .ID}} · {{.Titre}}</option>
+          {{- end}}
+        </select>
+      </div>
+      <button class="btn secondaire" type="submit">{{t "equipe.obs.ajouter"}}</button>
+    </form>
+    <h2>{{t "equipe.obs.statut.proposer"}}</h2>
+    <p>{{t "equipe.obs.statut.proposer.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/proposer">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn" type="submit">{{t "equipe.obs.statut.proposer.bouton"}}</button>
+    </form>
+    {{- else}}
+    <p class="note">{{t "equipe.obs.statut.brouillon_autre"}}</p>
+    {{- end}}
+    {{- end}}
+
+    {{- if and (eq (print .Etape) "propose") (a $m "relecteur")}}
+    <h2>{{t "equipe.obs.statut.relire"}}</h2>
+    {{- if eq .Redige.Par $m.ID}}
+    <p class="note">{{t "equipe.obs.quatre_yeux"}}</p>
+    {{- else}}
+    <p>{{t "equipe.obs.statut.relire.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/valider">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn" type="submit">{{t "equipe.obs.statut.valider.bouton"}}</button>
+    </form>
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/rejeter">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <div class="champ">
+        <label for="motif">{{t "equipe.obs.statut.motif"}}</label>
+        <textarea id="motif" name="motif" maxlength="2000" required></textarea>
+      </div>
+      <button class="btn secondaire" type="submit">{{t "equipe.obs.statut.rejeter.bouton"}}</button>
+    </form>
+    {{- end}}
+    {{- end}}
+
+    {{- if eq (print .Etape) "valide"}}
+    <h2>{{t "equipe.obs.statut.publier"}}</h2>
+    {{- if or (eq (print .Valeur) "tenu") (eq (print .Valeur) "en_cours")}}
+    <p>{{t "equipe.obs.statut.publier.aide"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/statuts/{{.ID}}/publier">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="btn" type="submit">{{t "equipe.obs.statut.publier.bouton"}}</button>
+    </form>
+    {{- else}}
+    <p class="note">{{t "obs.erreur.preavis"}}</p>
+    {{- end}}
+    {{- end}}
+    {{- end}}{{end}}
+{{end}}

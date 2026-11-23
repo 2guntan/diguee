@@ -16,6 +16,9 @@
     {{- with .Membre}}
     <nav aria-label="{{t "equipe.nav.libelle"}}">
       <a href="/equipe/">{{t "equipe.nav.accueil"}}</a>
+      {{- if and $.AvecObservatoire (or (a . "redacteur") (a . "relecteur"))}}
+      <a href="/equipe/observatoire">{{t "equipe.nav.observatoire"}}</a>
+      {{- end}}
       {{- if a . "administrateur"}}
       <a href="/equipe/membres">{{t "equipe.nav.membres"}}</a>
       <a href="/equipe/audit">{{t "equipe.nav.audit"}}</a>

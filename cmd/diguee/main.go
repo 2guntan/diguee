@@ -42,10 +42,12 @@ import (
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
 	journalpublic "github.com/2guntan/diguee/internal/journal"
+	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/publication"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
+	"github.com/2guntan/diguee/internal/stockage"
 	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/version"
 	"github.com/2guntan/diguee/internal/web"
@@ -112,6 +114,11 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	integrationAncrage, err := ancrage.Construire(cfg, registre)
+	if err != nil {
+		return err
+	}
+	// Stockage d'objets des copies archivées des sources de l'observatoire.
+	archives, err := stockage.Construire(cfg, registre)
 	if err != nil {
 		return err
 	}
@@ -245,9 +252,16 @@ func lancer(args []string, journal *slog.Logger) error {
 	// mémoire : suspension automatique sur un pic ou au plafond horaire,
 	// réactivation après DIGUEE_SMS_REACTIVATION ou par un administrateur
 	// (/equipe/sms, inscrite à l'audit).
+	// Observatoire (ticket #13) : saisie et circuit des statuts dans
+	// l'espace équipe, pages publiques sous /observatoire ; chaque
+	// publication de statut est inscrite au journal public.
+	obs := observatoire.NouveauService(b, archives, cfg.ArchiveTailleMax, nil)
 	optionsEspace := equipe.OptionsEspace{
 		Service: serviceEquipe, Sessions: sessionsEquipe, Magasin: b, Catalogues: catalogues, Journal: journal,
-		Ancrage: ancreur,
+		Ancrage: ancreur, Observatoire: obs,
+		ServirArchive: func(w http.ResponseWriter, r *http.Request, introuvable func()) {
+			web.ServirArchive(w, r, obs, false, journal.Error, introuvable)
+		},
 	}
 	var coupeSMS *antifraude.CoupeCircuit
 	if integrationSMS.Envoyeur != nil {
@@ -315,7 +329,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		}
 	}
 	srv, err := web.Nouveau(web.Options{
-		Config: cfg, Catalogues: catalogues, Publications: b, JournalPublic: jp, Ancrages: b,
+		Config: cfg, Catalogues: catalogues, Publications: b, JournalPublic: jp, Ancrages: b, Observatoire: obs,
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions, Questionnaire: q,
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,

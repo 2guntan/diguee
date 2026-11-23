@@ -1,0 +1,35 @@
+{{define "titre"}}{{t "equipe.obs.sources"}}{{end}}
+{{define "contenu"}}
+    <p><a href="/equipe/observatoire">{{t "equipe.obs.retour"}}</a></p>
+    <h1 class="display">{{t "equipe.obs.sources"}}</h1>
+    {{- template "obs_messages" .}}
+    {{- if a .Membre "redacteur"}}
+    <h2>{{t "equipe.obs.sources.ajouter"}}</h2>
+    <p>{{tf "equipe.obs.sources.regles" (mo .Obs.TailleMax)}}</p>
+    <p class="note">{{t "equipe.obs.ajout_seul"}}</p>
+    <form class="formulaire" method="post" action="/equipe/observatoire/sources" enctype="multipart/form-data">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="champ">
+        <label for="titre">{{t "equipe.obs.source.titre"}}</label>
+        <input id="titre" name="titre" type="text" maxlength="300" required value="{{index .Obs.Saisie "titre"}}">
+      </div>
+      <div class="champ">
+        <label for="url">{{t "equipe.obs.source.url"}}</label>
+        <input id="url" name="url" type="url" maxlength="2048" required value="{{index .Obs.Saisie "url"}}">
+      </div>
+      <div class="champ">
+        <label for="date">{{t "equipe.obs.source.date"}}</label>
+        <input id="date" name="date" type="date" required value="{{index .Obs.Saisie "date"}}">
+      </div>
+      <div class="champ">
+        <label for="fichier">{{t "equipe.obs.source.fichier"}}</label>
+        <input id="fichier" name="fichier" type="file" accept="application/pdf,image/png,image/jpeg" required>
+      </div>
+      <button class="btn" type="submit">{{t "equipe.obs.sources.archiver"}}</button>
+    </form>
+    {{- end}}
+    <h2>{{t "equipe.obs.sources.liste"}}</h2>
+    {{- range .Obs.Sources}}{{template "obs_source" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.sources.aucune"}}</p>
+    {{- end}}
+{{end}}

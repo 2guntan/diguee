@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base32"
+	"encoding/hex"
 	"html"
 	"io"
 	"io/fs"
@@ -28,6 +29,9 @@ import (
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
 	"github.com/2guntan/diguee/internal/journal"
+	jnl "github.com/2guntan/diguee/internal/journal"
+	"github.com/2guntan/diguee/internal/observatoire"
+	"github.com/2guntan/diguee/internal/stockage"
 	"github.com/2guntan/diguee/internal/totp"
 	"github.com/2guntan/diguee/internal/web"
 )
@@ -77,6 +81,7 @@ type banc struct {
 	horloge  *horloge
 	journal  *journalSur
 	coupe    *antifraude.CoupeCircuit // coupe-circuit du parcours SMS
+	archives *stockage.Dossier
 }
 
 func nouveauBanc(t *testing.T) *banc {
@@ -104,14 +109,22 @@ func nouveauBanc(t *testing.T) *banc {
 	svc := equipe.NouveauService(b, ch, ss, hl.Maintenant)
 	coupe := antifraude.NouveauCoupeCircuit(antifraude.OptionsCoupeCircuit{Facteur: 3, Plancher: 20, PlafondHoraire: 2,
 		Reactivation: time.Hour, Maintenant: hl.Maintenant, Journal: journal})
+	archives, err := stockage.NouveauDossier(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs := observatoire.NouveauService(b, archives, 64<<10, hl.Maintenant)
 	esp, err := equipe.NouvelEspace(equipe.OptionsEspace{Service: svc, Sessions: ss, Magasin: b, Catalogues: cs, Journal: journal,
-		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest()})
+		CoupeCircuitSMS: coupe, Ancrage: tableauDeTest(), Observatoire: obs,
+		ServirArchive: func(w http.ResponseWriter, r *http.Request, introuvable func()) {
+			web.ServirArchive(w, r, obs, false, journal.Error, introuvable)
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv, err := web.Nouveau(web.Options{
 		Config: cfg, Catalogues: cs, Publications: b, Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32),
-		Journal: journal, Equipe: esp,
+		Journal: journal, Equipe: esp, Observatoire: obs, JournalPublic: jnl.Nouveau(b, hl.Maintenant),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +132,7 @@ func nouveauBanc(t *testing.T) *banc {
 	// Le service refuse les codes du pas de démarrage (anti-rejeu après un
 	// redémarrage) : on commence au pas suivant.
 	hl.Avancer(totp.Periode)
-	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j, coupe: coupe}
+	return &banc{h: srv, base: b, schema: sc, service: svc, sessions: ss, horloge: hl, journal: j, coupe: coupe, archives: archives}
 }
 
 // compte est un membre créé pour le test, avec ses accès.
@@ -946,4 +959,10 @@ func TestTexteHebdomadairePourX(t *testing.T) {
 	if strings.Contains(c, "<form class=\"formulaire\"") || strings.Contains(c, "method=\"post\" action=\"/equipe/ancrage") {
 		t.Error("la page ne doit rien publier")
 	}
+}
+
+// archivesAlterer remplace le contenu d'une copie archivée dans le dossier
+// du stockage (pour vérifier qu'elle n'est plus servie).
+func (b *banc) archivesAlterer(sha [32]byte) error {
+	return os.WriteFile(b.archives.Chemin+"/archives/"+hex.EncodeToString(sha[:]), []byte("altéré"), 0o600)
 }

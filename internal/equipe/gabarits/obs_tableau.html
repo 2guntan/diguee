@@ -1,0 +1,33 @@
+{{define "titre"}}{{t "equipe.obs.titre"}}{{end}}
+{{define "contenu"}}
+    <h1 class="display">{{t "equipe.obs.titre"}}</h1>
+    {{- template "obs_messages" .}}
+    <p>{{t "equipe.obs.chapeau"}}</p>
+    <p class="actions"><a class="btn" href="/equipe/observatoire/engagements">{{t "equipe.obs.nouvel_engagement"}}</a> <a class="btn secondaire" href="/equipe/observatoire/sources">{{t "equipe.obs.sources"}}</a> <a class="btn secondaire" href="/equipe/observatoire/elus">{{t "equipe.obs.elus"}}</a> <a class="btn secondaire" href="/observatoire">{{t "equipe.obs.pages_publiques"}}</a></p>
+    {{- with .Obs}}
+    <h2>{{t "equipe.obs.tableau.a_valider"}}</h2>
+    {{- range .AValider}}
+    <p><a href="/equipe/observatoire/engagements/{{.ID}}">{{tf "equipe.obs.engagement_n" .ID}}</a> · {{.Elu.Nom}} · {{tf "equipe.obs.saisi_par" .Cree.ParNom (jour .Cree.Le)}}</p>
+    {{- else}}
+    <p class="muted">{{t "equipe.obs.tableau.rien"}}</p>
+    {{- end}}
+    <h2>{{t "equipe.obs.tableau.proposes"}}</h2>
+    {{- range .Proposes}}{{template "obs_ligne" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.tableau.rien"}}</p>
+    {{- end}}
+    <h2>{{t "equipe.obs.tableau.valides"}}</h2>
+    {{- range .Valides}}{{template "obs_ligne" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.tableau.rien"}}</p>
+    {{- end}}
+    <h2>{{t "equipe.obs.tableau.brouillons"}}</h2>
+    {{- range .Brouillons}}{{template "obs_ligne" .}}{{else}}
+    <p class="muted">{{t "equipe.obs.tableau.rien"}}</p>
+    {{- end}}
+    <h2>{{t "equipe.obs.tableau.tous"}}</h2>
+    {{- range .Engagements}}
+    <p><a href="/equipe/observatoire/engagements/{{.ID}}">{{tf "equipe.obs.engagement_n" .ID}}</a> · {{.Elu.Nom}} · {{if .Validation}}{{t "equipe.obs.engagement.valide"}}{{else}}{{t "equipe.obs.engagement.a_valider"}}{{end}}{{with .Dernier}} · <span class="valeur">{{valeur .Valeur}}</span>{{end}}</p>
+    {{- else}}
+    <p class="muted">{{t "equipe.obs.tableau.rien"}}</p>
+    {{- end}}
+    {{- end}}
+{{end}}

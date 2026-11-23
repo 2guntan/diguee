@@ -22,6 +22,7 @@ import (
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/journal"
+	"github.com/2guntan/diguee/internal/observatoire"
 	"github.com/2guntan/diguee/internal/questionnaire"
 	"github.com/2guntan/diguee/internal/session"
 	"github.com/2guntan/diguee/internal/sms"
@@ -38,7 +39,8 @@ var fichiersStatiques embed.FS
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
 	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal", "resultats", "resultats_publications",
-	"sans_javascript", "verifier_sms_suspendu", "verifier_code", "verifier_code_saisie", "dev_sms"}
+	"sans_javascript", "verifier_sms_suspendu", "verifier_code", "verifier_code_saisie", "dev_sms",
+	"observatoire", "engagement"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -82,6 +84,12 @@ type Options struct {
 	// sous /journal/ancrages/AAAA-MM-JJ.ots et la liste complète sous
 	// /journal/ancrages.json. Facultatif.
 	Ancrages Ancrages
+
+	// Observatoire sert les pages publiques de l'observatoire (ticket #13)
+	// s'il est fourni : /observatoire (liste filtrable),
+	// /observatoire/engagements/{id} (fiche) et
+	// /observatoire/archives/<sha256>.<extension> (copies archivées).
+	Observatoire *observatoire.Service
 
 	// Equipe sert l'espace équipe sous /equipe s'il est fourni (paquet
 	// equipe) : routes, cookies et contrôles d'accès séparés des pages
@@ -221,6 +229,11 @@ func Nouveau(opt Options) (*Serveur, error) {
 		s.mux.HandleFunc("GET /journal/ancrages/{fichier}", s.preuveOTS)
 		s.mux.HandleFunc("GET /journal/ancrages.json", s.ancragesJSON)
 	}
+	if opt.Observatoire != nil {
+		s.mux.HandleFunc("GET /observatoire", s.observatoireListe)
+		s.mux.HandleFunc("GET /observatoire/engagements/{id}", s.observatoireFiche)
+		s.mux.HandleFunc("GET /observatoire/archives/{fichier}", s.observatoireArchive)
+	}
 	if opt.Equipe != nil {
 		s.mux.Handle("/equipe", opt.Equipe)
 		s.mux.Handle("/equipe/", opt.Equipe)
@@ -326,6 +339,9 @@ type Donnees struct {
 	CodeDev     string        // page de simulation : dernier code écrit dans la console
 
 	Journal *VueJournal // page /journal
+
+	AvecObservatoire bool             // l'observatoire est servi : lien dans la navigation
+	Observatoire     *VueObservatoire // pages /observatoire
 }
 
 func (s *Serveur) donnees() Donnees {
@@ -339,6 +355,8 @@ func (s *Serveur) donnees() Donnees {
 		CodeSecours: s.codeWhatsApp != nil,
 		SMSSecours:  s.sms != nil,
 		DureeCode:   s.opt.Config.CodeDuree,
+
+		AvecObservatoire: s.opt.Observatoire != nil,
 	}
 }
 
@@ -432,11 +450,19 @@ func fonctions(c *i18n.Catalogue) template.FuncMap {
 			}
 			return c.Date(d.Jour)
 		},
-		"liste": func(xs []string) string { return strings.Join(xs, c.T("format.liste.separateur")) },
+		"valeur":  func(v observatoire.Valeur) string { return c.T("obs.valeur." + string(v)) },
+		"extrait": extrait,
+		"taille":  func(n int64) string { return Taille(c, n) },
+		"liste":   func(xs []string) string { return strings.Join(xs, c.T("format.liste.separateur")) },
 		"multiplicateur": func(f float64) string {
 			return c.F("format.multiplicateur", strconv.FormatFloat(f, 'f', -1, 64))
 		},
 	}
+}
+
+// Taille écrit une taille de fichier en kilo-octets (arrondis au-dessus).
+func Taille(c *i18n.Catalogue, n int64) string {
+	return c.F("format.ko", c.Nombre((n+1023)/1024))
 }
 
 func entier(n any) int64 {

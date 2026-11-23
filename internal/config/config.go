@@ -124,6 +124,12 @@ type Config struct {
 
 	// Observatoire (§9).
 	PreavisJours int // DIGUEE_PREAVIS_JOURS : 15
+	// ArchiveTailleMax est la taille maximale, en octets, d'une copie
+	// archivée de source (PDF ou image) téléversée par un rédacteur.
+	ArchiveTailleMax int64 // DIGUEE_ARCHIVE_TAILLE_MO : 10 (Mo), 100 au plus
+
+	// Stockage d'objets des copies archivées des sources (§6.4, ADR 0006).
+	Stockage Stockage
 
 	// URLPublique est l'adresse du site, sans « / » final : pages déposées
 	// sur archive.org et liens du texte hebdomadaire pour X.
@@ -144,6 +150,21 @@ type Ancrage struct {
 	Archive        string        // DIGUEE_ANCRAGE_ARCHIVE : https://web.archive.org
 	Decalage       time.Duration // DIGUEE_ANCRAGE_DECALAGE : 15m après DIGUEE_HEURE_PUBLICATION
 	Delai          time.Duration // DIGUEE_ANCRAGE_DELAI : 60s, délai d'attente d'un appel
+}
+
+// Stockage règle le stockage d'objets des copies archivées des sources.
+type Stockage struct {
+	// Mode : fake (dossier local, défaut, refusé en production) ou ovh
+	// (Object Storage d'OVHcloud, API S3, signature AWS SigV4).
+	Mode    string // DIGUEE_STOCKAGE
+	Dossier string // DIGUEE_STOCKAGE_DOSSIER : dossier du mode fake ; défaut : <dossier temporaire>/diguee-archives
+
+	PointAcces   string        // DIGUEE_OVH_S3_POINT_ACCES : https://s3.gra.io.cloud.ovh.net par exemple
+	Region       string        // DIGUEE_OVH_S3_REGION : gra, sbg… (région de la signature)
+	Compartiment string        // DIGUEE_OVH_S3_COMPARTIMENT : nom du bucket
+	CleAcces     string        // DIGUEE_OVH_S3_CLE_ACCES : identifiant de la clé d'accès S3
+	CleSecrete   string        // DIGUEE_OVH_S3_CLE_SECRETE : clé secrète S3 ; secret
+	Delai        time.Duration // DIGUEE_OVH_S3_DELAI : délai d'attente d'un appel, 60s
 }
 
 // CalendriersParDefaut sont les calendriers publics OpenTimestamps utilisés
@@ -196,11 +217,13 @@ type Meta struct {
 var (
 	motifIDMeta = regexp.MustCompile(`^[0-9]{5,30}$`)
 	// Noms de modèles de Meta : minuscules, chiffres et « _ ».
-	motifModeleMeta  = regexp.MustCompile(`^[a-z0-9_]{1,512}$`)
-	motifLangueMeta  = regexp.MustCompile(`^[a-z]{2,3}(_[A-Z]{2})?$`)
-	motifVersionMeta = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,2}$`)
-	motifUUID        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	motifCleGCP      = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
+	motifModeleMeta   = regexp.MustCompile(`^[a-z0-9_]{1,512}$`)
+	motifLangueMeta   = regexp.MustCompile(`^[a-z]{2,3}(_[A-Z]{2})?$`)
+	motifVersionMeta  = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,2}$`)
+	motifUUID         = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	motifCompartiment = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	motifRegionS3     = regexp.MustCompile(`^[a-z0-9-]{2,40}$`)
+	motifCleGCP       = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$`)
 )
 
 // Charger lit la configuration avec la fonction getenv (os.Getenv en
@@ -306,6 +329,18 @@ func Charger(getenv func(string) string) (*Config, error) {
 	c.PopulationANSD = l.texte("DIGUEE_POPULATION_ANSD")
 
 	c.PreavisJours = l.entier("DIGUEE_PREAVIS_JOURS", 15)
+	c.ArchiveTailleMax = int64(l.auPlus("DIGUEE_ARCHIVE_TAILLE_MO", 10, "la limite du code", 100)) << 20
+
+	c.Stockage.Mode = l.choix("DIGUEE_STOCKAGE", "fake", "fake", "ovh")
+	c.Stockage.Dossier = l.chaine("DIGUEE_STOCKAGE_DOSSIER", "")
+	if c.Stockage.Mode == "ovh" {
+		c.Stockage.PointAcces = l.adresseHTTPS("DIGUEE_OVH_S3_POINT_ACCES", "")
+		c.Stockage.Region = l.motif("DIGUEE_OVH_S3_REGION", motifRegionS3, "une région en minuscules comme gra")
+		c.Stockage.Compartiment = l.motif("DIGUEE_OVH_S3_COMPARTIMENT", motifCompartiment, "un nom de bucket S3 (3 à 63 caractères parmi a-z, 0-9, « . » et « - »)")
+		c.Stockage.CleAcces = l.secret("DIGUEE_OVH_S3_CLE_ACCES", 8)
+		c.Stockage.CleSecrete = l.secret("DIGUEE_OVH_S3_CLE_SECRETE", 16)
+		c.Stockage.Delai = l.duree("DIGUEE_OVH_S3_DELAI", "60s")
+	}
 
 	c.URLPublique = l.adresseHTTPS("DIGUEE_URL_PUBLIQUE", "https://consultation.diguee.sn")
 	modeAncrage := "fake"
@@ -425,7 +460,7 @@ func (l *lecteur) choix(nom, defaut string, permis ...string) string {
 func (l *lecteur) obligatoire(nom string) string {
 	v := l.chaine(nom, "")
 	if v == "" {
-		l.erreur(nom, errors.New("est obligatoire avec ce mode (DIGUEE_EMPREINTEUR ou DIGUEE_WHATSAPP)"))
+		l.erreur(nom, errors.New("est obligatoire avec ce mode (DIGUEE_EMPREINTEUR, DIGUEE_WHATSAPP ou DIGUEE_STOCKAGE)"))
 	}
 	return v
 }
@@ -462,7 +497,7 @@ func (l *lecteur) motifDefaut(nom, defaut string, m *regexp.Regexp, attendu stri
 func (l *lecteur) adresseHTTPS(nom, defaut string) string {
 	v := strings.TrimRight(l.chaine(nom, defaut), "/")
 	if v == "" {
-		l.erreur(nom, errors.New("est obligatoire avec ce DIGUEE_EMPREINTEUR"))
+		l.erreur(nom, errors.New("est obligatoire avec ce mode (DIGUEE_EMPREINTEUR ou DIGUEE_STOCKAGE)"))
 		return ""
 	}
 	return l.adresseHTTPSValeur(nom, v)
