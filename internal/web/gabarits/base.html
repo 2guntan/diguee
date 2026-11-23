@@ -39,7 +39,7 @@
     </div>
     <div class="links">
       <div>{{if .AvecObservatoire}}<a href="/observatoire">{{t "nav.observatoire"}}</a>{{end}}<a href="/resultats">{{t "nav.resultats"}}</a><a href="/methodologie">{{t "nav.methodologie"}}</a><a href="/confidentialite">{{t "nav.confidentialite"}}</a><a href="/journal">{{t "nav.journal"}}</a></div>
-      <p>{{tf "pied.cdp" .Config.NumeroCDP.Valeur}}</p>
+      <p>{{signaler (tf "pied.cdp" .Config.NumeroCDP.Valeur)}}</p>
       <p class="version">{{tf "pied.version" .Version}}<br>{{t "pied.sha256"}} <code>{{.SHA256}}</code></p>
     </div>
   </div>

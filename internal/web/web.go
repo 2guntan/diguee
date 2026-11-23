@@ -64,6 +64,11 @@ const (
 	scriptAltcha   = "/statique/altcha.js"   // page de vérification : preuve de travail
 )
 
+// marqueACompleter signale dans les pages une valeur encore provisoire
+// (« À COMPLÉTER »). Elle ne se voit qu'en développement : en production, la
+// garde refuse de démarrer s'il en reste une.
+const marqueACompleter = `<mark class="a-completer">` + config.ACompleter + `</mark>`
+
 // Options regroupe les dépendances du serveur web.
 type Options struct {
 	Config     *config.Config
@@ -432,7 +437,11 @@ func cacheStatique(h http.Handler) http.Handler {
 // fonctions donne aux gabarits l'accès au catalogue de la langue.
 func fonctions(c *i18n.Catalogue) template.FuncMap {
 	return template.FuncMap{
-		"langue":  func() string { return c.Code },
+		"langue": func() string { return c.Code },
+		// signaler échappe le texte et y signale les valeurs provisoires.
+		"signaler": func(s string) template.HTML {
+			return template.HTML(strings.ReplaceAll(template.HTMLEscapeString(s), config.ACompleter, marqueACompleter))
+		},
 		"t":       c.T,
 		"tf":      c.F,
 		"pluriel": func(cle string, n any) string { return c.Pluriel(cle, entier(n)) },

@@ -125,7 +125,10 @@ func (h *horloge) avancer(d time.Duration) {
 	h.mu.Unlock()
 }
 
-func nouveauBanc(t *testing.T, env map[string]string) *banc {
+// nouveauBanc construit le banc ; les fonctions regler complètent les
+// options du serveur (observatoire, journal public, publications…) avant sa
+// construction.
+func nouveauBanc(t *testing.T, env map[string]string, regler ...func(*base.Base, *Options)) *banc {
 	t.Helper()
 	// Le serveur se connecte avec le rôle de l'application (ticket #7) :
 	// SELECT et INSERT seulement, comme en production. pg_dump lit le schéma
@@ -217,14 +220,18 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	ralentisseurSMS := antifraude.NouveauRalentisseur(antifraude.OptionsRalentisseur{
 		ParHeure: cfg.SMSIPParHeure, Maintenant: h.maintenant, Attendre: att.attendre, Journal: journal,
 	})
-	s, err := Nouveau(Options{
+	opt := Options{
 		Config: cfg, Catalogues: cs, Publications: b,
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
 		Maintenant:  h.maintenant,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
 		WhatsApp: wa, Verificateur: v, Altcha: captcha, Ralentisseur: ralentisseur, Codes: cv,
 		SMS: integrationSMS, CodesSMS: cs2, RalentisseurSMS: ralentisseurSMS,
-	})
+	}
+	for _, r := range regler {
+		r(b, &opt)
+	}
+	s, err := Nouveau(opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,10 +1061,11 @@ func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
 	verifierObservatoireT1(t, b.base, b.schema, numeros)
 }
 
-// verifierObservatoireT1 publie un statut de l'observatoire, puis vérifie
-// le dump : tables de l'observatoire présentes, sans colonne plus fine que
-// le jour, et rien d'un participant dedans.
-func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, numeros []string) {
+// remplirObservatoire saisit un élu, une source archivée et un engagement
+// validé, puis publie un statut « tenu » et, après un préavis et un droit
+// de réponse vérifié, un « non tenu » (tickets #13 et #14). Il renvoie le
+// service et l'identifiant de l'engagement.
+func remplirObservatoire(t *testing.T, b *base.Base) (*observatoire.Service, int64) {
 	t.Helper()
 	ctx := context.Background()
 	for i, id := range []string{"00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b"} {
@@ -1123,6 +1131,15 @@ func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, nume
 	if err != nil {
 		t.Fatal(err)
 	}
+	return o, eng
+}
+
+// verifierObservatoireT1 publie un statut de l'observatoire, puis vérifie
+// le dump : tables de l'observatoire présentes, sans colonne plus fine que
+// le jour, et rien d'un participant dedans.
+func verifierObservatoireT1(t *testing.T, b *base.Base, sc basetest.Schema, numeros []string) {
+	t.Helper()
+	remplirObservatoire(t, b)
 	dump := pgDump(t, sc)
 	tables := []string{"elu", "source", "engagement", "engagement_source", "engagement_validation", "statut",
 		"statut_preuve", "statut_proposition", "statut_validation", "statut_rejet", "statut_publication",

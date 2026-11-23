@@ -8,10 +8,10 @@
     <h2>{{t "confid.responsable.titre"}}</h2>
     <p>{{t "confid.responsable.texte"}}</p>
     <dl class="params">
-      <div><dt>{{t "confid.responsable.nom"}}</dt><dd>{{.Config.StructureNom.Valeur}}</dd></div>
-      <div><dt>{{t "confid.responsable.adresse"}}</dt><dd>{{.Config.StructureAdresse.Valeur}}</dd></div>
-      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{.Config.NumeroCDP.Valeur}}</dd></div>
-      <div><dt>{{t "confid.responsable.contact"}}</dt><dd>{{.Config.Contact.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.nom"}}</dt><dd>{{signaler .Config.StructureNom.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.adresse"}}</dt><dd>{{signaler .Config.StructureAdresse.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{signaler .Config.NumeroCDP.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.contact"}}</dt><dd>{{signaler .Config.Contact.Valeur}}</dd></div>
     </dl>
 
     <h2>{{t "confid.finalite.titre"}}</h2>
@@ -19,7 +19,7 @@
 
     <h2>{{t "confid.donnees.titre"}}</h2>
     <ul>
-      <li>{{tf "confid.donnees.numero" (jour .Config.Cloture)}}</li>
+      <li>{{signaler (tf "confid.donnees.numero" (jour .Config.Cloture))}}</li>
       <li>{{t "confid.donnees.reponse"}}</li>
       <li>{{t "confid.donnees.profil"}}</li>
     </ul>
@@ -37,7 +37,7 @@
 
     <h2>{{t "confid.durees.titre"}}</h2>
     <ul>
-      <li>{{tf "confid.durees.empreinte" (jour .Config.Cloture)}}</li>
+      <li>{{signaler (tf "confid.durees.empreinte" (jour .Config.Cloture))}}</li>
       <li>{{t "confid.durees.reponses"}}</li>
       <li>{{t "confid.durees.sauvegardes"}}</li>
       <li>{{t "confid.durees.journaux"}}</li>
@@ -47,17 +47,17 @@
     <p>{{t "confid.cookie.texte"}}</p>
 
     <h2>{{t "confid.droits.titre"}}</h2>
-    <p>{{tf "confid.droits.texte" .Config.Contact.Valeur}}</p>
+    <p>{{signaler (tf "confid.droits.texte" .Config.Contact.Valeur)}}</p>
     <p>{{t "confid.droits.definitive"}}</p>
     <p>{{t "confid.droits.cdp"}}</p>
 
     <h2>{{t "confid.parametres.titre"}}</h2>
     <dl class="params">
-      <div><dt>{{t "param.ouverture"}}</dt><dd>{{jour .Config.Ouverture}}</dd></div>
-      <div><dt>{{t "param.cloture"}}</dt><dd>{{jour .Config.Cloture}}</dd></div>
+      <div><dt>{{t "param.ouverture"}}</dt><dd>{{signaler (jour .Config.Ouverture)}}</dd></div>
+      <div><dt>{{t "param.cloture"}}</dt><dd>{{signaler (jour .Config.Cloture)}}</dd></div>
       <div><dt>{{t "param.seuil_publication"}}</dt><dd>{{nombre .Config.SeuilPublication}}</dd></div>
       <div><dt>{{t "param.seuil_case"}}</dt><dd>{{nombre .Config.SeuilCase}}</dd></div>
-      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{.Config.NumeroCDP.Valeur}}</dd></div>
+      <div><dt>{{t "confid.responsable.cdp"}}</dt><dd>{{signaler .Config.NumeroCDP.Valeur}}</dd></div>
     </dl>
   </div>
 </section>

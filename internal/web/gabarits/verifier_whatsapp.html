@@ -10,7 +10,7 @@
     {{- if .Jeton}}
     <p>{{t "verif.whatsapp.consigne"}}</p>
     <p class="jeton">{{.Jeton}}</p>
-    <p>{{tf "verif.whatsapp.numero" .Config.NumeroWhatsApp.Valeur}}</p>
+    <p>{{signaler (tf "verif.whatsapp.numero" .Config.NumeroWhatsApp.Valeur)}}</p>
     <p><a class="btn" href="{{.LienWaMe}}">{{t "verif.whatsapp.bouton"}}</a></p>
     {{- if .QR}}
     <figure class="qr">

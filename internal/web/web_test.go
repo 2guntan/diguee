@@ -95,7 +95,7 @@ func TestAccueil(t *testing.T) {
 		"à partir de 1\u202f000 réponses",
 		`href="/methodologie"`, `href="/confidentialite"`,
 		"Version v0.0.0-test", strings.Repeat("ab", 32),
-		"Déclaration à la CDP nº\u00a0À COMPLÉTER",
+		"Déclaration à la CDP nº\u00a0" + marqueACompleter,
 		"La consultation ouvre bientôt",
 	} {
 		if !strings.Contains(c, attendu) {

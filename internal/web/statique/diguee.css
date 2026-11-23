@@ -19,17 +19,17 @@ a:hover{text-underline-offset:4px}
 .evitement:focus{left:16px;top:16px;background:#fff;padding:8px 12px}
 
 /* En-tête */
-header .wrap{display:flex;align-items:center;justify-content:space-between;gap:24px;padding-top:24px;padding-bottom:24px}
+header .wrap{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 24px;padding-top:24px;padding-bottom:24px}
 .logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink)}
 .logo span{font-family:"Bricolage Grotesque",sans-serif;font-weight:600;font-size:26px;letter-spacing:-.02em;line-height:1}
-nav{display:flex;align-items:center;gap:32px;font-size:15px}
-nav a{text-decoration:none;color:var(--ink)}
+nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px 32px;font-size:15px}
+nav a{text-decoration:none;color:var(--ink);white-space:nowrap}
 nav a:hover{text-decoration:underline}
 
 /* Accueil */
 .hero .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:56px 40px;padding-top:clamp(40px,7vw,104px);padding-bottom:clamp(48px,7vw,96px)}
 .hero-text{flex:1 1 560px;max-width:780px;display:flex;flex-direction:column;gap:28px}
-.kicker{font-size:15px;font-weight:500;color:var(--muted);margin:0}
+.kicker{font-size:15px;font-weight:400;color:var(--muted);margin:0}
 .hero h1{font-size:clamp(52px,7.6vw,108px);line-height:.97;letter-spacing:-.034em}
 .lead{font-size:clamp(17px,1.6vw,22px);line-height:1.55;max-width:600px;margin:0}
 .question{flex:0 1 400px;border-top:3px solid var(--ink);padding-top:22px;display:flex;flex-direction:column;gap:24px}
@@ -67,6 +67,8 @@ nav a:hover{text-decoration:underline}
 .erreur{margin:0;color:#A4161A;font-weight:600}
 .en-erreur{border-left:3px solid #A4161A;padding-left:14px}
 .alerte{border-left:3px solid var(--gold);background:#FFF8E1;padding:12px 16px}
+/* Valeur encore provisoire (développement seulement : la production refuse de démarrer) */
+.a-completer{background:#FFF3C4;color:var(--ink);font-weight:600;padding:0 4px;outline:1px dashed var(--ink)}
 .actions{flex-direction:row;flex-wrap:wrap;gap:16px}
 button.btn{border:0;font-family:inherit;cursor:pointer}
 .btn.secondaire{background:#fff;color:var(--ink);border:1px solid var(--ink)}
@@ -76,17 +78,18 @@ button.btn{border:0;font-family:inherit;cursor:pointer}
 footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:24px 80px;padding-top:48px;padding-bottom:48px}
 footer .about{display:flex;flex-direction:column;gap:14px;max-width:440px}
 footer p{margin:0;font-size:15px;line-height:1.6;color:var(--muted)}
-footer .links{display:flex;flex-direction:column;gap:10px;align-items:flex-end;font-size:15px;max-width:100%}
+footer .links{margin-left:auto;display:flex;flex-direction:column;gap:10px;align-items:flex-end;font-size:15px;max-width:100%}
 footer .links div{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:flex-end}
 .version{font-size:12px;text-align:right}
 .version code{word-break:break-all}
 
 @media (max-width:720px){
   body{font-size:17px}
-  nav{gap:18px}
+  header .wrap{padding-top:16px;padding-bottom:16px}
+  nav{gap:4px 18px}
   .logo span{font-size:22px}
   .question{flex-basis:100%}
-  footer .links{align-items:flex-start}
+  footer .links{align-items:flex-start;margin-left:0}
   footer .links div{justify-content:flex-start}
   .version{text-align:left}
 }
@@ -111,7 +114,7 @@ button.lien{background:none;border:0;padding:0;font:inherit;font-size:15px;color
 .qr svg{width:232px;height:232px;display:block}
 @media (min-width:900px) and (hover:hover) and (pointer:fine){.qr{display:block}}
 /* Résultats : tableaux sans script, croisements repliés dans <details> */
-.instantane h2{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:clamp(24px,2.4vw,32px);letter-spacing:-.02em;margin:48px 0 12px}
+.instantane h2{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:clamp(24px,2.4vw,32px);letter-spacing:-.02em;line-height:1.2;margin:48px 0 12px}
 .instantane h3{font-size:19px;line-height:1.4;margin:32px 0 8px}
 .instantane p{max-width:760px}
 .tableau{overflow-x:auto;margin:8px 0 16px}

@@ -15,7 +15,7 @@
       {{- if .Config.Ouverture.Provisoire}}
       <span class="btn" aria-disabled="true">{{t "accueil.bouton.bientot"}}</span>
       {{- else}}
-      <span class="btn" aria-disabled="true">{{tf "accueil.bouton.ouvre_le" (jour .Config.Ouverture)}}</span>
+      <span class="btn" aria-disabled="true">{{signaler (tf "accueil.bouton.ouvre_le" (jour .Config.Ouverture))}}</span>
       {{- end}}
       {{- else if eq .Phase "ouverte"}}
       {{- if .Parcours}}
@@ -34,7 +34,7 @@
   <div class="wrap">
     <span class="dot" aria-hidden="true"></span>
     <p><strong id="compteur">{{pluriel "accueil.compteur" .Compteur}}</strong>
-    {{- if .SeuilAtteint}} {{t "accueil.seuil_atteint"}} <a href="/resultats">{{t "accueil.resultats.lien"}}</a>{{else}} {{tf "accueil.seuil" (nombre .Config.SeuilPublication)}}{{end}}
+    {{- if .SeuilAtteint}} {{t "accueil.seuil_atteint"}} <a href="/resultats">{{t "accueil.resultats.lien"}}</a>.{{else}} {{tf "accueil.seuil" (nombre .Config.SeuilPublication)}}{{end}}
     {{- if not .JourCompteur.IsZero}} <span class="muted">{{tf "accueil.compteur.publication" (date .JourCompteur)}}</span>{{end}}</p>
   </div>
 </section>

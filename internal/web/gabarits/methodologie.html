@@ -22,7 +22,7 @@
     <p>{{tf "methodo.anonymat.tampon" (nombre .Config.TamponTaille) (duree .Config.TamponDelai)}}</p>
 
     <h2>{{t "methodo.calendrier.titre"}}</h2>
-    <p>{{tf "methodo.calendrier.texte" (jour .Config.Ouverture) (jour .Config.Cloture)}}</p>
+    <p>{{signaler (tf "methodo.calendrier.texte" (jour .Config.Ouverture) (jour .Config.Cloture))}}</p>
 
     <h2>{{t "methodo.resultats.titre"}}</h2>
     <p>{{tf "methodo.resultats.seuil" (nombre .Config.SeuilPublication)}}</p>
@@ -45,8 +45,8 @@
     <h2>{{t "methodo.parametres.titre"}}</h2>
     <p>{{t "methodo.parametres.texte"}}</p>
     <dl class="params">
-      <div><dt>{{t "param.ouverture"}}</dt><dd>{{jour .Config.Ouverture}}</dd></div>
-      <div><dt>{{t "param.cloture"}}</dt><dd>{{jour .Config.Cloture}}</dd></div>
+      <div><dt>{{t "param.ouverture"}}</dt><dd>{{signaler (jour .Config.Ouverture)}}</dd></div>
+      <div><dt>{{t "param.cloture"}}</dt><dd>{{signaler (jour .Config.Cloture)}}</dd></div>
       <div><dt>{{t "param.prefixes"}}</dt><dd>{{liste .Config.PrefixesAutorises}}</dd></div>
       <div><dt>{{t "param.seuil_publication"}}</dt><dd>{{nombre .Config.SeuilPublication}}</dd></div>
       <div><dt>{{t "param.seuil_case"}}</dt><dd>{{nombre .Config.SeuilCase}}</dd></div>
