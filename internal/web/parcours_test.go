@@ -163,6 +163,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	sessions := session.NouveauMagasin()
 	sessions.Maintenant = h.maintenant
 	empreinteur := empreinte.NouveauHMACLocal(nil)
+	ouverte := func() bool { return cfg.Phase(h.maintenant()) == config.PhaseOuverte }
 	wa, err := whatsapp.Construire(cfg, &integration.Registre{})
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +171,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	v, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
 		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions, Prefixes: cfg.PrefixesAutorises,
 		Limiteur: limite, Surveillance: surveillance,
-		Duree: cfg.JetonDuree, Maintenant: h.maintenant, Journal: journal,
+		Duree: cfg.JetonDuree, Maintenant: h.maintenant, Journal: journal, Ouverte: ouverte,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +187,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	cv, err := codes.Nouveau(codes.Options{
 		Canal: "WhatsApp", Envoyeur: console, Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
 		Limiteur: limite, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
-		Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Maintenant: h.maintenant, Journal: journal,
+		Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Maintenant: h.maintenant, Journal: journal, Ouverte: ouverte,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +209,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 		Canal: "SMS", Envoyeur: consoleSMS, Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
 		Limiteur: limite, LimiteurCanal: limiteSMS, Disjoncteur: coupe, Surveillance: surveillance,
 		Prefixes: cfg.PrefixesAutorises, Duree: cfg.CodeDuree, Essais: cfg.SMSCodeEssais, Maintenant: h.maintenant, Journal: journal,
+		Ouverte: ouverte,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -599,8 +601,19 @@ func TestParcoursGardeParLaSessionEtLaPhase(t *testing.T) {
 	if p := n.post("/questionnaire/recapitulatif", formulaireVoulu(1)); p.statut != http.StatusUnauthorized {
 		t.Errorf("récapitulatif sans session : %d", p.statut)
 	}
-	// Consultation pas encore ouverte, ou close : retour à l'accueil.
-	for _, ouverture := range []string{"2027-01-15", "2026-01-01", config.ACompleter} {
+	// Consultation close : « Consultation close » ; pas encore ouverte :
+	// retour à l'accueil.
+	{
+		b := nouveauBanc(t, map[string]string{"DIGUEE_OUVERTURE": "2026-01-01"})
+		n := &navigateur{t: t, h: b.srv}
+		if p := n.get("/verifier"); p.statut != http.StatusOK || !strings.Contains(p.corps, "Consultation close") {
+			t.Errorf("close : %d", p.statut)
+		}
+		if p := n.get("/"); strings.Contains(p.corps, `href="/verifier"`) {
+			t.Error("close : l'accueil ne doit pas mener au parcours")
+		}
+	}
+	for _, ouverture := range []string{"2027-01-15", config.ACompleter} {
 		b := nouveauBanc(t, map[string]string{"DIGUEE_OUVERTURE": ouverture})
 		n := &navigateur{t: t, h: b.srv}
 		if p := n.get("/verifier"); p.statut != http.StatusSeeOther || p.location != "/" {

@@ -796,3 +796,36 @@ func ChargerSauvegarde(getenv func(string) string, faire bool) (*Sauvegarde, err
 	}
 	return s, nil
 }
+
+// AttestationVolumeParDefaut est le fichier écrit par « volume.sh
+// renouveler » à la Clôture (ticket #16).
+const AttestationVolumeParDefaut = "/etc/diguee/volume-renouvele.json"
+
+// Cloture règle ce que « diguee cloturer » lit en plus de la configuration
+// du serveur (ticket #16).
+type Cloture struct {
+	// Certificat client (mTLS) de l'identité de clôture du KMS d'OVHcloud,
+	// seule autorisée à désactiver et supprimer la clé de l'empreinte ; créée
+	// par le porteur au moment de la Clôture. Obligatoire avec
+	// DIGUEE_EMPREINTEUR=ovh.
+	KMSCertificat string // DIGUEE_CLOTURE_KMS_CERTIFICAT
+	KMSCleClient  string // DIGUEE_CLOTURE_KMS_CLE_CLIENT : secret
+	// AttestationVolume est le compte rendu du renouvellement des clés du
+	// volume chiffré.
+	AttestationVolume string // DIGUEE_CLOTURE_ATTESTATION_VOLUME : /etc/diguee/volume-renouvele.json
+}
+
+// ChargerCloture lit les variables propres à « diguee cloturer ». kms dit
+// si la clé de l'empreinte est dans le KMS d'OVHcloud.
+func ChargerCloture(getenv func(string) string, kms bool) (*Cloture, error) {
+	l := lecteur{getenv: getenv}
+	c := &Cloture{AttestationVolume: l.chaine("DIGUEE_CLOTURE_ATTESTATION_VOLUME", AttestationVolumeParDefaut)}
+	if kms {
+		c.KMSCertificat = l.obligatoire("DIGUEE_CLOTURE_KMS_CERTIFICAT")
+		c.KMSCleClient = l.obligatoire("DIGUEE_CLOTURE_KMS_CLE_CLIENT")
+	}
+	if len(l.erreurs) > 0 {
+		return nil, errors.Join(l.erreurs...)
+	}
+	return c, nil
+}

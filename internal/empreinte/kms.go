@@ -240,3 +240,41 @@ func autorites(chemin string) (*x509.CertPool, error) {
 	}
 	return pool, nil
 }
+
+// appeler envoie une requête (corps JSON facultatif) et renvoie le code HTTP
+// et le corps de la réponse, borné ; seule une erreur de transport est une
+// erreur. Elle ne sert qu'à des opérations sans numéro (destruction de clé).
+func (c *clientKMS) appeler(ctx context.Context, methode, adresse string, corps any) (int, []byte, error) {
+	echec := func(format string, args ...any) error {
+		return &erreurKMS{nom: c.nom, detail: masquer(fmt.Sprintf(format, args...), "")}
+	}
+	var lecteur io.Reader
+	if corps != nil {
+		charge, err := json.Marshal(corps)
+		if err != nil {
+			return 0, nil, echec("encodage de la requête impossible")
+		}
+		lecteur = bytes.NewReader(charge)
+	}
+	req, err := http.NewRequestWithContext(ctx, methode, adresse, lecteur)
+	if err != nil {
+		return 0, nil, echec("requête impossible")
+	}
+	if corps != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, echec("appel impossible : %s", causeReseau(err))
+	}
+	defer res.Body.Close()
+	lu, err := io.ReadAll(io.LimitReader(res.Body, tailleMaxReponse+1))
+	if err != nil {
+		return 0, nil, echec("réponse illisible (HTTP %d) : %s", res.StatusCode, causeReseau(err))
+	}
+	if len(lu) > tailleMaxReponse {
+		return 0, nil, echec("réponse trop longue (HTTP %d)", res.StatusCode)
+	}
+	return res.StatusCode, lu, nil
+}

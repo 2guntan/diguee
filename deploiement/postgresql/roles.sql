@@ -22,6 +22,8 @@ CREATE DATABASE diguee OWNER diguee_proprietaire ENCODING 'UTF8' LOCALE 'C.UTF-8
 REVOKE ALL ON DATABASE diguee FROM PUBLIC;
 GRANT CONNECT ON DATABASE diguee TO diguee_app;
 GRANT CONNECT, CREATE, TEMPORARY ON DATABASE diguee TO diguee_proprietaire;
+-- Clôture (#16) : CHECKPOINT après la suppression de participation.
+GRANT pg_checkpoint TO diguee_proprietaire;
 
 \connect diguee
 -- Le schéma public appartient au propriétaire ; personne d'autre n'y crée

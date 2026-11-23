@@ -69,10 +69,16 @@ func (s *Serveur) parcoursActif() bool {
 		o.Altcha != nil
 }
 
-// ouvert enveloppe les pages du parcours : hors de la période d'ouverture,
-// ou si le parcours n'est pas servi, on revient à l'accueil.
+// ouvert enveloppe les pages du parcours : après la Clôture, elles
+// affichent « Consultation close » (ticket #16) et plus rien n'est calculé,
+// ni jeton, ni code, ni empreinte ; avant l'ouverture, ou si le parcours
+// n'est pas servi, on revient à l'accueil.
 func (s *Serveur) ouvert(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.opt.Config.Phase(s.opt.Maintenant()) == config.PhaseClose {
+			s.consultationClose(w, r)
+			return
+		}
 		if !s.parcoursActif() || s.opt.Config.Phase(s.opt.Maintenant()) != config.PhaseOuverte {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
@@ -86,6 +92,29 @@ func (s *Serveur) ouvert(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// consultationClose répond aux pages du parcours après la Clôture : la page
+// « Consultation close » (410 Gone pour un envoi de formulaire), ou « fin »
+// pour l'interrogation du script de la page du jeton, qui recharge alors la
+// page. Une session en cours est détruite : son jeton ou son code est oublié.
+func (s *Serveur) consultationClose(w http.ResponseWriter, r *http.Request) {
+	if s.parcoursActif() {
+		if _, ok := s.opt.Sessions.ID(r); ok {
+			s.detruireSession(w, r)
+		}
+	}
+	if r.URL.Path == "/verifier/etat" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"etat":"fin"}` + "\n"))
+		return
+	}
+	statut := http.StatusOK
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		statut = http.StatusGone
+	}
+	s.rendre(w, r, statut, "close", s.donnees())
 }
 
 // avecSession exige une session vérifiée.
@@ -143,6 +172,10 @@ func (s *Serveur) envoyer(w http.ResponseWriter, r *http.Request, etat session.E
 	}
 	err := s.opt.Tampon.Ajouter(r.Context(), etat.Empreinte, rep)
 	switch {
+	case errors.Is(err, tampon.ErrFerme):
+		// Le dernier tampon de la Clôture est écrit : plus aucun envoi.
+		s.detruireSession(w, r)
+		s.rendre(w, r, http.StatusGone, "close", s.donnees())
 	case errors.Is(err, tampon.ErrDejaParticipe):
 		s.detruireSession(w, r)
 		s.rendre(w, r, http.StatusConflict, "deja_participe", s.donnees())

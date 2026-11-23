@@ -71,6 +71,7 @@ const (
 	DejaParticipe               // code juste, mais l'empreinte a déjà participé
 	SessionPerdue               // code juste, mais la session a disparu
 	Suspendu                    // canal suspendu par son coupe-circuit : aucun envoi
+	Close                       // consultation close (Clôture, ticket #16) : aucun code, aucune vérification
 )
 
 // Doublons dit si une empreinte a déjà participé (tampon.Tampon : base ou tampon).
@@ -127,6 +128,9 @@ type Options struct {
 	Essais       int              // DIGUEE_CODE_ESSAIS
 	Maintenant   func() time.Time // time.Now par défaut
 	Journal      *slog.Logger     // slog.Default() par défaut
+	// Ouverte dit si la consultation est ouverte. Après la Clôture, aucun
+	// code n'est tiré ni accepté (ticket #16). nil : toujours ouverte.
+	Ouverte func() bool
 }
 
 // entree est le code d'une session : jamais le code lui-même, seulement son
@@ -187,6 +191,9 @@ func Nouveau(opt Options) (*Verificateur, error) {
 // Metriques renvoie les compteurs.
 func (v *Verificateur) Metriques() *Metriques { return &v.m }
 
+// ouverte dit si la consultation est ouverte (Options.Ouverte).
+func (v *Verificateur) ouverte() bool { return v.opt.Ouverte == nil || v.opt.Ouverte() }
+
 // Suspendu dit si le canal est suspendu par son coupe-circuit.
 func (v *Verificateur) Suspendu() bool {
 	return v.opt.Disjoncteur != nil && v.opt.Disjoncteur.Suspendu()
@@ -231,6 +238,10 @@ var ErrEnvoi = errors.New("envoi du code impossible")
 // le HMAC du code.
 func (v *Verificateur) Demander(ctx context.Context, session, saisie string) (Statut, error) {
 	v.Oublier(session)
+	// Consultation close : rien n'est calculé, rien n'est envoyé.
+	if !v.ouverte() {
+		return Close, nil
+	}
 	// Canal suspendu : rien n'est calculé ni compté.
 	if v.Suspendu() {
 		v.m.Suspendus.Add(1)
@@ -333,6 +344,10 @@ func normaliserSaisie(s string) string {
 // SessionPerdue ; le code est alors consommé. Une erreur (base
 // indisponible) laisse le code et ses essais tels quels.
 func (v *Verificateur) Valider(ctx context.Context, session, saisie string) (Statut, int, error) {
+	if !v.ouverte() {
+		v.Oublier(session)
+		return Close, 0, nil
+	}
 	h := v.empreinteCode(session, normaliserSaisie(saisie))
 	v.mu.Lock()
 	e, ok := v.parSession[session]

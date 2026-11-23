@@ -30,12 +30,15 @@ type Table struct {
 // Controle est le résultat du contrôle d'une base restaurée.
 type Controle struct {
 	Tables    []Table
-	Migration int               // dernière migration appliquée
-	Journal   journal.Rapport   // chaîne du journal public, vérifiée
-	Derniere  *journal.Entree   // dernière entrée du journal
-	Duree     time.Duration     // durée du contrôle
-	Manque    []string          // tables principales absentes
-	parNom    map[string]*Table // index
+	Migration int             // dernière migration appliquée
+	Journal   journal.Rapport // chaîne du journal public, vérifiée
+	Derniere  *journal.Entree // dernière entrée du journal
+	Duree     time.Duration   // durée du contrôle
+	Manque    []string        // tables principales absentes
+	// ParticipationsDetruites : la table participation est absente parce
+	// que la Clôture l'a supprimée (entrée du journal public).
+	ParticipationsDetruites bool
+	parNom                  map[string]*Table // index
 }
 
 // Lignes renvoie le nombre de lignes d'une table (-1 si elle est absente).
@@ -79,7 +82,20 @@ func Controler(ctx context.Context, url string, export io.Writer) (*Controle, er
 	for i := range c.Tables {
 		c.parNom[c.Tables[i].Nom] = &c.Tables[i]
 	}
+	// Après la Clôture (ticket #16), la table participation n'existe plus :
+	// son absence est attendue si le journal public porte l'entrée de sa
+	// suppression.
+	detruites := false
+	if slices.Contains(noms, "journal_public") && !slices.Contains(noms, "participation") {
+		if detruites, err = b.ParticipationsDetruites(ctx); err != nil {
+			return c, fmt.Errorf("journal public : %w", err)
+		}
+	}
+	c.ParticipationsDetruites = detruites
 	for _, t := range TablesPrincipales {
+		if t == "participation" && detruites {
+			continue
+		}
 		if !slices.Contains(noms, t) {
 			c.Manque = append(c.Manque, t)
 		}

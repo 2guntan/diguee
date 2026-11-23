@@ -140,6 +140,18 @@ func (b *Base) AccorderDroits(ctx context.Context, role string) error {
 			return err
 		}
 		politique := TablesApplication()
+		// Après la Clôture (ticket #16), participation n'existe plus : elle
+		// sort de la politique, seulement si le journal public porte
+		// l'entrée de sa suppression.
+		if !slices.Contains(tables, "participation") {
+			var detruites bool
+			if err := tx.QueryRow(ctx, requeteParticipationsDetruites).Scan(&detruites); err != nil {
+				return err
+			}
+			if detruites {
+				politique = slices.DeleteFunc(politique, func(t string) bool { return t == "participation" })
+			}
+		}
 		var ecarts []string
 		for _, t := range tables {
 			if !slices.Contains(politique, t) {
@@ -166,6 +178,9 @@ func (b *Base) AccorderDroits(ctx context.Context, role string) error {
 			"GRANT USAGE ON SCHEMA " + s + " TO " + r,
 		}
 		for _, d := range droitsApplication {
+			if !slices.Contains(politique, d.table) {
+				continue
+			}
 			ordres = append(ordres, "GRANT "+d.droits+" ON "+pgx.Identifier{schema, d.table}.Sanitize()+" TO "+r)
 		}
 		for _, o := range ordres {

@@ -100,6 +100,10 @@ func (s *Serveur) creerJeton(w http.ResponseWriter, r *http.Request) {
 		s.oublierParcours(id)
 		_, err = s.opt.Verificateur.Creer(id)
 	}
+	if errors.Is(err, whatsapp.ErrClose) {
+		s.consultationClose(w, r)
+		return
+	}
 	if err != nil {
 		s.opt.Journal.Error("création du jeton de vérification", "erreur", err)
 		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())

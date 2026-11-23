@@ -148,6 +148,11 @@
   "confid.parametres.titre": "Paramètres en vigueur",
 
   "erreur.retour": "Retour à l'accueil",
+  "close.titre": "Consultation close",
+  "close.texte": "La consultation est close\u00a0: il n'est plus possible de répondre ni de vérifier un numéro.",
+  "close.conserve": "Les réponses reçues sont conservées et les résultats restent publiés. Les empreintes des numéros et la clé qui servait à les calculer sont détruites, et le procès-verbal de cette destruction est inscrit au journal public.",
+  "close.resultats": "Voir les résultats",
+  "close.journal": "Voir le journal public",
   "erreur.introuvable.titre": "Page introuvable",
   "erreur.introuvable.texte": "Cette page n'existe pas.",
   "erreur.indisponible.titre": "Service momentanément indisponible",

@@ -68,7 +68,14 @@ type OptionsVerificateur struct {
 	Duree        time.Duration    // DIGUEE_JETON_DUREE
 	Maintenant   func() time.Time // time.Now par défaut
 	Journal      *slog.Logger     // slog.Default() par défaut
+	// Ouverte dit si la consultation est ouverte. Après la Clôture, aucun
+	// jeton n'est créé et les messages reçus sont ignorés, sans calcul
+	// d'empreinte (ticket #16). nil : toujours ouverte.
+	Ouverte func() bool
 }
+
+// ErrClose signale une demande de jeton après la Clôture.
+var ErrClose = errors.New("vérification inversée : consultation close")
 
 // Jeton est un jeton affiché à une session.
 type Jeton struct {
@@ -117,6 +124,7 @@ type Metriques struct {
 	JetonsInconnus   atomic.Int64 // jeton inconnu, expiré, ou message sans jeton
 	SecondExpediteur atomic.Int64 // jeton déjà utilisé reçu d'un autre expéditeur
 	Limitees         atomic.Int64 // refusées par la limite par empreinte
+	HorsPeriode      atomic.Int64 // messages reçus après la Clôture, ignorés
 }
 
 // NouveauVerificateur prépare un vérificateur vide.
@@ -137,12 +145,18 @@ func NouveauVerificateur(opt OptionsVerificateur) (*Verificateur, error) {
 	return v, nil
 }
 
+// ouverte dit si la consultation est ouverte (OptionsVerificateur.Ouverte).
+func (v *Verificateur) ouverte() bool { return v.opt.Ouverte == nil || v.opt.Ouverte() }
+
 // Metriques renvoie les compteurs.
 func (v *Verificateur) Metriques() *Metriques { return &v.m }
 
 // Creer tire un nouveau jeton pour la session. Un jeton précédent de la même
 // session est révoqué.
 func (v *Verificateur) Creer(session string) (Jeton, error) {
+	if !v.ouverte() {
+		return Jeton{}, ErrClose
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	maintenant := v.opt.Maintenant()
@@ -209,6 +223,12 @@ func (v *Verificateur) Oublier(session string) {
 // réessayé (KMS ou base indisponible) ; le jeton reste alors utilisable.
 // Ni le numéro ni le texte ne sont journalisés.
 func (v *Verificateur) Recevoir(ctx context.Context, expediteur, texte string) error {
+	if !v.ouverte() {
+		// Après la Clôture, rien n'est vérifié : Meta reçoit 200 et ne
+		// réessaie pas.
+		v.m.HorsPeriode.Add(1)
+		return nil
+	}
 	t, err := extraireJeton(texte)
 	if err != nil {
 		v.m.JetonsInconnus.Add(1)

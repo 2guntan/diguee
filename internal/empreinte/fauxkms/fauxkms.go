@@ -151,6 +151,15 @@ type OVH struct {
 	CleVolumeID           string // clé symétrique des opérations encrypt et decrypt (clé du volume)
 	Certificat, CleClient string // fichiers PEM du certificat client accepté
 	cle                   *rsa.PrivateKey
+	etatCle               string // cycle de vie de la clé RSA : active, deactivated, supprimée (« »)
+}
+
+// EtatCle renvoie l'état de la clé RSA de l'empreinte : « active »,
+// « deactivated » ou « supprimee ».
+func (o *OVH) EtatCle() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.etatCle
 }
 
 // DemarrerOVH démarre un faux KMS OVH qui exige un certificat client signé
@@ -187,6 +196,7 @@ func DemarrerOVH(t testing.TB) *OVH {
 		Certificat:  ecrirePEM(t, dir, "client.pem", "CERTIFICATE", derCli),
 		CleClient:   ecrirePEM(t, dir, "client.key", "PRIVATE KEY", derCleCli),
 		cle:         cleRSATest(t),
+		etatCle:     "active",
 	}
 	o.t = t
 	pool := x509.NewCertPool()
@@ -227,6 +237,24 @@ func (o *OVH) Signature(message string) []byte {
 func (o *OVH) servir(w http.ResponseWriter, r *http.Request) {
 	if racine := "/api/" + o.KMSID + "/v1/servicekey/" + o.CleVolumeID + "/"; strings.HasPrefix(r.URL.Path, racine) {
 		o.servirVolume(w, r, strings.TrimPrefix(r.URL.Path, racine))
+		return
+	}
+	if racine := "/api/" + o.KMSID + "/v1/servicekey/" + o.CleID; r.URL.Path == racine || r.URL.Path == racine+"/deactivate" {
+		o.servirCycle(w, r, r.URL.Path == racine+"/deactivate")
+		return
+	}
+	if etat := o.EtatCle(); etat != "active" {
+		// Clé désactivée ou supprimée : plus aucune signature.
+		o.mu.Lock()
+		o.requetes++
+		o.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		code := http.StatusBadRequest
+		if etat == "supprimee" {
+			code = http.StatusNotFound
+		}
+		w.WriteHeader(code)
+		io.WriteString(w, `{"error_code":17125378,"errors":["key is not active"]}`)
 		return
 	}
 	var corps struct {
@@ -274,6 +302,65 @@ func (o *OVH) servir(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"signature": base64.StdEncoding.EncodeToString(sig)})
+}
+
+// servirCycle imite la lecture (GET), la désactivation (POST …/deactivate)
+// et la suppression (DELETE) d'une clé de service : la suppression exige
+// une clé désactivée ; une clé supprimée est introuvable (404).
+func (o *OVH) servirCycle(w http.ResponseWriter, r *http.Request, desactiver bool) {
+	brut, _ := io.ReadAll(r.Body)
+	if _, suite := o.debut(w, r, ""); !suite {
+		return
+	}
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		o.defaut("pas de certificat client")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	repondre := func(code int, corps any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		if corps != nil {
+			json.NewEncoder(w).Encode(corps)
+		}
+	}
+	erreur := func(code int, message string) {
+		repondre(code, map[string]any{"error_code": 17125377, "errors": []string{message}, "request_id": "faux"})
+	}
+	if o.etatCle == "supprimee" {
+		erreur(http.StatusNotFound, "key not found")
+		return
+	}
+	switch {
+	case desactiver && r.Method == http.MethodPost:
+		var c struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(brut, &c) != nil || c.Reason == "" {
+			o.defaut("désactivation sans raison")
+			erreur(http.StatusBadRequest, "reason is required")
+			return
+		}
+		if o.etatCle != "active" {
+			erreur(http.StatusBadRequest, "key is not active")
+			return
+		}
+		o.etatCle = "deactivated"
+		repondre(http.StatusNoContent, nil)
+	case !desactiver && r.Method == http.MethodDelete:
+		if o.etatCle != "deactivated" {
+			erreur(http.StatusBadRequest, "key must be deactivated before deletion")
+			return
+		}
+		o.etatCle = "supprimee"
+		repondre(http.StatusNoContent, nil)
+	case !desactiver && r.Method == http.MethodGet:
+		repondre(http.StatusOK, map[string]any{"id": o.CleID, "name": "diguee-empreinte", "type": "RSA",
+			"protectionLevel": "hsm", "attributes": map[string]string{"state": o.etatCle}})
+	default:
+		o.defaut("méthode %s sur %s", r.Method, r.URL.Path)
+		erreur(http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // GCP imite la méthode macSign de l'API REST de Google Cloud KMS.

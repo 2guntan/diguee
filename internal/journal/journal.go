@@ -207,6 +207,17 @@ func (j *Journal) Inscrire(ctx context.Context, t Type, contenu any) (Entree, er
 	return *e, nil
 }
 
+// InscrireSi ajoute une entrée du type donné si condition, appelée sous le
+// verrou d'écriture du journal, renvoie vrai : la vérification et l'écriture
+// ne peuvent pas être séparées par une autre écriture, même d'un autre
+// processus. Elle renvoie nil (et aucune erreur) si rien n'est inscrit.
+func (j *Journal) InscrireSi(ctx context.Context, t Type, contenu any, condition func(context.Context, Vue) (bool, error)) (*Entree, error) {
+	if condition == nil {
+		return nil, errors.New("journal : condition absente")
+	}
+	return j.inscrireSi(ctx, t, contenu, condition)
+}
+
 // ContenuMiseEnProduction est le contenu d'une entrée « mise en production ».
 type ContenuMiseEnProduction struct {
 	Version          string `json:"version"`

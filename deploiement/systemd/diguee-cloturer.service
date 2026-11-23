@@ -1,0 +1,84 @@
+# Procédure de destruction de la Clôture (ticket #16, spec §12, ADR 0002) :
+# « diguee cloturer », avec le rôle propriétaire (seul à pouvoir supprimer
+# la table participation), la clé d'écriture du compartiment des
+# sauvegardes (suppression de toutes, puis nouvelle sauvegarde sans la
+# table) et l'identité de clôture du KMS (destruction de la clé de
+# l'empreinte). Jamais activée : lancée à la main, une fois la fermeture
+# inscrite au journal public par le serveur (deploiement/README.md §12) :
+#   sudo systemctl start diguee-cloturer && journalctl -u diguee-cloturer -o cat
+# Relancée, elle reprend à la première étape qui manque. En cas d'échec :
+# alerte (diguee-alerte@) ; aucune étape suivante n'est faite.
+[Unit]
+Description=Diguee : clôture (destruction des empreintes, des sauvegardes et de la clé)
+Documentation=https://github.com/2guntan/diguee/blob/main/deploiement/README.md
+Wants=network-online.target
+After=network-online.target diguee-volume.service postgresql@16-main.service
+Requires=diguee-volume.service postgresql@16-main.service
+# Pas de Conflicts= avec diguee-sauvegarde.service (une sauvegarde de nuit
+# lancée pendant la procédure l'arrêterait) : arrêter le minuteur avant
+# (README §12). De toute façon, la procédure supprime tout objet apparu
+# avant sa nouvelle sauvegarde, et le procès-verbal exige que la plus
+# ancienne sauvegarde restante soit la sienne.
+OnFailure=diguee-alerte@%n.service
+
+[Service]
+Type=oneshot
+# Utilisateur des migrations : « peer » → rôle diguee_proprietaire.
+User=diguee-migrations
+Group=diguee-migrations
+# Lus par systemd (root 0600) : configuration du serveur, rôle
+# propriétaire, clé d'écriture S3 des sauvegardes, réglages de la clôture
+# (facultatif).
+EnvironmentFile=/etc/diguee/diguee.env
+EnvironmentFile=/etc/diguee/migrations.env
+EnvironmentFile=/etc/diguee/sauvegarde.env
+EnvironmentFile=-/etc/diguee/cloture.env
+Environment=DIGUEE_ENV=production
+Environment=DIGUEE_TLS=acme
+# Certificat du serveur : seulement pour la validité de la configuration
+# (comme diguee-migrer) ; la commande ne signe rien.
+Environment=DIGUEE_OVH_KMS_CERTIFICAT=%d/kms-client.pem
+Environment=DIGUEE_OVH_KMS_CLE_CLIENT=%d/kms-client.key
+# Identité de clôture du KMS : seule autorisée à désactiver et supprimer la
+# clé de l'empreinte ; créée par le porteur au moment de la Clôture.
+LoadCredential=kms-cloture.pem:/etc/diguee/kms-cloture.pem
+LoadCredential=kms-cloture.key:/etc/diguee/kms-cloture.key
+Environment=DIGUEE_CLOTURE_KMS_CERTIFICAT=%d/kms-cloture.pem
+Environment=DIGUEE_CLOTURE_KMS_CLE_CLIENT=%d/kms-cloture.key
+Environment=DIGUEE_CLOTURE_ATTESTATION_VOLUME=/etc/diguee/volume-renouvele.json
+# Nouvelle sauvegarde, faite par la procédure elle-même (même code que
+# diguee-sauvegarde.service), avec le rôle propriétaire.
+Environment=DIGUEE_SAUVEGARDE_POSTGRES_URL=postgres://diguee_proprietaire@/diguee?host=/var/run/postgresql
+Environment=DIGUEE_SAUVEGARDE_PG_DUMP=/usr/lib/postgresql/16/bin/pg_dump
+Environment=DIGUEE_SAUVEGARDE_AGE=/usr/bin/age
+LoadCredential=sauvegarde.age.pub:/etc/diguee/sauvegarde.age.pub
+Environment=DIGUEE_SAUVEGARDE_CLE_PUBLIQUE=%d/sauvegarde.age.pub
+ExecStart=/opt/diguee/diguee cloturer
+TimeoutStartSec=6h
+SyslogIdentifier=diguee-cloturer
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+UMask=0077

@@ -40,7 +40,7 @@ var fichiersStatiques embed.FS
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
 	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal", "resultats", "resultats_publications",
 	"sans_javascript", "verifier_sms_suspendu", "verifier_code", "verifier_code_saisie", "dev_sms",
-	"observatoire", "engagement"}
+	"observatoire", "engagement", "close"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +

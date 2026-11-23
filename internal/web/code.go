@@ -228,6 +228,9 @@ func (s *Serveur) demanderCode(c *canalCode) http.HandlerFunc {
 		case statut == codes.Suspendu:
 			s.rendreSuspendu(w, r)
 			return
+		case statut == codes.Close:
+			s.consultationClose(w, r)
+			return
 		case statut != codes.Envoye:
 			s.rendreCode(w, r, c, http.StatusBadRequest, erreursCode[statut])
 			return
@@ -286,6 +289,9 @@ func (s *Serveur) saisieCode(c *canalCode) http.HandlerFunc {
 				return
 			}
 			http.Redirect(w, r, "/questionnaire", http.StatusSeeOther)
+			return
+		case statut == codes.Close:
+			s.consultationClose(w, r)
 			return
 		case statut == codes.DejaParticipe:
 			// Rien d'autre n'est révélé (spec §4, étape 3).

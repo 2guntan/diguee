@@ -26,6 +26,9 @@
 //	diguee sauvegarde faire | lister | recuperer | supprimer-toutes | controler
 //	                        sauvegardes chiffrées de la base (age), conservées
 //	                        30 jours dans l'Object Storage (ticket #15)
+//	diguee cloturer [-sans-volume]
+//	                        procédure de destruction de la Clôture, avec le rôle
+//	                        propriétaire (ticket #16) ; reprend à l'étape qui manque
 package main
 
 import (
@@ -45,6 +48,7 @@ import (
 	"github.com/2guntan/diguee/internal/ancrage"
 	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
+	"github.com/2guntan/diguee/internal/cloture"
 	"github.com/2guntan/diguee/internal/codes"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
@@ -92,6 +96,16 @@ func main() {
 		arreter()
 		if err != nil {
 			journal.Error("diguee sauvegarde : " + err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "cloturer" {
+		ctx, arreter := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := cloturer(ctx, os.Args[2:], os.Getenv, os.Stdout, journal)
+		arreter()
+		if err != nil {
+			journal.Error("diguee cloturer : " + err.Error())
 			os.Exit(1)
 		}
 		return
@@ -249,7 +263,7 @@ func lancer(args []string, journal *slog.Logger) error {
 		return ancrer(ctx, ancreur, os.Stdout)
 	case "servir":
 	default:
-		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, ancrer, verifier-config, version, verifier-journal, cle-volume)", commande)
+		return fmt.Errorf("commande inconnue : %s (servir, migrer, creer-membre, publier, ancrer, verifier-config, version, verifier-journal, cle-volume, sauvegarde, cloturer)", commande)
 	}
 
 	// Journal public : une entrée « mise en production » à chaque démarrage sur
@@ -328,13 +342,31 @@ func lancer(args []string, journal *slog.Logger) error {
 		Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
 		Surveillance: surveillance,
 	})
+	// Clôture (ticket #16) : à DIGUEE_CLOTURE, le parcours affiche
+	// « Consultation close » et plus aucun jeton ni code n'est délivré ;
+	// le tampon est écrit une dernière fois, la dernière publication suit à
+	// l'heure habituelle, puis la fermeture est inscrite au journal public.
+	ouverte := func() bool { return cfg.Phase(time.Now()) == config.PhaseOuverte }
+	fermee := make(chan struct{})
+	if !cfg.Cloture.Provisoire() {
+		fermeture := &cloture.Fermeture{
+			Cloture: cfg.Cloture.Jour, Heure: cfg.HeurePublication, Tampon: tp, Publieur: planificateur.Publieur,
+			Reponses: b, Journal: jp, Log: journal,
+		}
+		go func() {
+			defer close(fermee)
+			fermeture.Lancer(ctx)
+		}()
+	} else {
+		close(fermee)
+	}
 	sessions := session.NouveauMagasin()
 	// Vérification inversée par WhatsApp (ADR 0009) : jetons en mémoire,
 	// webhook de Meta.
 	verificateur, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
 		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
 		Limiteur: limiteEmpreinte, Surveillance: surveillance,
-		Prefixes: cfg.PrefixesAutorises, Duree: cfg.JetonDuree, Journal: journal,
+		Prefixes: cfg.PrefixesAutorises, Duree: cfg.JetonDuree, Journal: journal, Ouverte: ouverte,
 	})
 	if err != nil {
 		return err
@@ -348,7 +380,7 @@ func lancer(args []string, journal *slog.Logger) error {
 			Canal: "WhatsApp", Envoyeur: integrationWhatsApp.Envoyeur,
 			Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
 			Limiteur: limiteEmpreinte, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
-			Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Journal: journal,
+			Duree: cfg.CodeDuree, Essais: cfg.CodeEssais, Journal: journal, Ouverte: ouverte,
 		})
 		if err != nil {
 			return err
@@ -364,7 +396,7 @@ func lancer(args []string, journal *slog.Logger) error {
 			Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
 			Limiteur: limiteEmpreinte, LimiteurCanal: antifraude.NouvelleLimiteEmpreinte(cfg.SMSParEmpreinte24h, nil),
 			Disjoncteur: coupeSMS, Surveillance: surveillance, Prefixes: cfg.PrefixesAutorises,
-			Duree: cfg.CodeDuree, Essais: cfg.SMSCodeEssais, Journal: journal,
+			Duree: cfg.CodeDuree, Essais: cfg.SMSCodeEssais, Journal: journal, Ouverte: ouverte,
 		})
 		if err != nil {
 			return err
@@ -416,6 +448,7 @@ func lancer(args []string, journal *slog.Logger) error {
 	arreter()
 	<-planifiee
 	<-ancree
+	<-fermee
 	return errServeur
 }
 

@@ -180,7 +180,7 @@ etape_systeme() {
 	poser "$ICI/installer-version.sh" /usr/local/sbin/diguee-installer 0755
 	poser "$ICI/commande.sh" /usr/local/sbin/diguee-commande 0755
 	for u in diguee.service diguee-migrer.service diguee-volume.service \
-		diguee-sauvegarde.service diguee-sauvegarde.timer diguee-alerte@.service; do
+		diguee-sauvegarde.service diguee-sauvegarde.timer diguee-alerte@.service diguee-cloturer.service; do
 		poser "$ICI/systemd/$u" "/etc/systemd/system/$u" 0644
 	done
 	poser "$ICI/systemd/postgresql@16-main.service.d/diguee.conf" /etc/systemd/system/postgresql@16-main.service.d/diguee.conf 0644

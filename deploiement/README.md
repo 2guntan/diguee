@@ -29,7 +29,7 @@ Ordre au démarrage de la machine : `network-online.target` → `diguee-volume.s
 | `preparer-vps.sh` | Préparation du VPS, en deux étapes : `systeme`, puis `postgresql` | (lancé depuis une copie du dossier) |
 | `deployer.sh` | Déploiement en une commande, depuis le poste | (dépôt) |
 | `installer-version.sh` | Partie serveur du déploiement : SHA-256, installation, migrations, redémarrage, contrôle, retour arrière | `/usr/local/sbin/diguee-installer` |
-| `volume.sh` | Volume chiffré : `creer`, `ouvrir`, `secours`, `fermer`, `etat` | `/usr/local/lib/diguee/volume.sh` |
+| `volume.sh` | Volume chiffré : `creer`, `ouvrir`, `secours`, `fermer`, `etat`, `renouveler` (Clôture, §12) | `/usr/local/lib/diguee/volume.sh` |
 | `commande.sh` | Lance une commande de `diguee` (`verifier-config`, `creer-membre`, `publier`, `ancrer`) dans le contexte du service, par `systemd-run` | `/usr/local/sbin/diguee-commande` |
 | `controle-journaux.sh` | Contrôle T3 : ni IP ni numéro dans les journaux | `/usr/local/sbin/diguee-controle-journaux` |
 | `restaurer-sauvegarde.sh` | Restauration d'une sauvegarde et contrôle (ticket #15), **hors du serveur** | (ordinateur du porteur) |
@@ -37,6 +37,7 @@ Ordre au démarrage de la machine : `network-online.target` → `diguee-volume.s
 | `systemd/diguee-migrer.service` | Migrations avec le rôle propriétaire | `/etc/systemd/system/` |
 | `systemd/diguee-volume.service` | Déverrouillage du volume au démarrage | `/etc/systemd/system/` |
 | `systemd/diguee-sauvegarde.service`, `.timer` | Sauvegarde chiffrée chaque nuit (ticket #15) | `/etc/systemd/system/` |
+| `systemd/diguee-cloturer.service` | Procédure de destruction de la Clôture (ticket #16, §12), jamais activée, lancée à la main | `/etc/systemd/system/` |
 | `systemd/diguee-alerte@.service` | Alerte au journal quand une unité échoue (`OnFailure=`) | `/etc/systemd/system/` |
 | `systemd/postgresql@16-main.service.d/diguee.conf` | PostgreSQL attend le volume | `/etc/systemd/system/postgresql@16-main.service.d/` |
 | `systeme/*` | SSH, nftables, journald, mises à jour automatiques, logrotate | `/etc/…` |
@@ -57,6 +58,9 @@ Fichiers sur le serveur, jamais dans le dépôt :
 | `/etc/diguee/kms-client.pem`, `.key` | Certificat d'accès au KMS de l'empreinte (signature) | root 0600, remis au service par `LoadCredential` |
 | `/etc/diguee/kms-volume.pem`, `.key` | Certificat d'accès au KMS de la clé du volume (déchiffrement seulement) | root 0600 |
 | `/etc/diguee/volume.cle.jwe` | Clé du volume **chiffrée** par le KMS | root 0600 |
+| `/etc/diguee/kms-cloture.pem`, `.key` | À la Clôture seulement : certificat de l'identité de clôture du KMS (désactiver et supprimer la clé de l'empreinte), §12 | root 0600, remis à `diguee-cloturer` par `LoadCredential` ; à supprimer après |
+| `/etc/diguee/cloture.env` | Facultatif : réglages de `diguee cloturer` (aucun n'est nécessaire) | root 0600 |
+| `/etc/diguee/volume-renouvele.json` | Attestation du renouvellement des clés du volume (Clôture), écrite par `volume.sh renouveler` (aucun secret) | root 0644 |
 | `/etc/diguee/adresses-tolerees` | Adresses admises par le contrôle T3 dans le journal système | root 0644 |
 
 ## 1. Pare-feu réseau d'OVHcloud
@@ -244,6 +248,7 @@ Essayé :
 - `essais/conteneur.sh` (Docker, Ubuntu 24.04, sans systemd) : `preparer-vps.sh systeme` complet (paquets, utilisateurs, `sshd -T`, nftables chargé, journald, rsyslog retiré), `systemd-analyze verify` des unités, `diguee-installer` (SHA-256 juste et altéré), `volume.sh creer` jusqu'au formatage LUKS2 et à la phrase de secours (le bac à sable n'avait pas de device-mapper : ouverture et montage remplacés par un tmpfs), `preparer-vps.sh postgresql` (cluster sur le volume, aucun port TCP), **vrai `diguee migrer` en production** avec le rôle propriétaire par « peer », puis droits du rôle de l'application vérifiés en SQL ; **sauvegarde (ticket #15)** : `age` installé, rôle `diguee_sauvegarde` par « peer » (lecture de tout, écriture refusée, inaccessible aux autres utilisateurs), vrai `diguee sauvegarde faire` (pg_dump | age, objet chiffré, état 0644 lisible par `diguee`), échec signalé (code 1 et état), puis restauration par `restaurer-sauvegarde.sh` (déchiffrement, `pg_restore`, lignes et journal contrôlés) et « restauration réelle » dans une base `diguee` recréée (propriétaires d'origine gardés, `diguee migrer` réaccorde les droits, données lues par le rôle de l'application) ; `systemd-analyze verify` des nouvelles unités et du minuteur.
 
 - Sauvegardes (ticket #15) : `go test ./internal/sauvegarde ./internal/stockage ./cmd/diguee` (faux S3 qui vérifie la signature SigV4, paire de clés `age` tirée pour le test) ; `restaurer-sauvegarde.sh --docker` essayé à la main (conteneur `postgres:16` en mémoire, supprimé à la fin).
+- Clôture (ticket #16) : `go test ./internal/cloture ./internal/web ./internal/empreinte ./internal/base ./cmd/diguee` (simulation de bout en bout sur une vraie base PostgreSQL 16, vraies sauvegardes `pg_dump` + `age` dans un dossier, faux KMS qui imite `deactivate`, `DELETE` et `GET`) ; `volume.sh renouveler` seulement à blanc (`DIGUEE_A_BLANC=1`) et par `shellcheck`. Pas essayé : la destruction d'une clé dans le vrai KMS (codes de réponse, noms des actions IAM), `cryptsetup reencrypt` et l'effacement du WAL sur un vrai volume, `diguee-cloturer.service` sous un vrai systemd (§12).
 
 Pas essayé (à faire par le porteur, dans l'ordre de la section « Mise en production pas à pas ») : un vrai VPS et systemd (ordre de démarrage, `LoadCredential`, durcissement de l'unité en marche : `systemd-analyze security diguee`), le pare-feu réseau d'OVHcloud, le vrai KMS (encrypt/decrypt, noms des actions IAM), `cryptsetup open` et le montage au démarrage, Let's Encrypt en vrai, le DNS, le redémarrage automatique des mises à jour ; pour les sauvegardes : le vrai Object Storage (`ListObjectsV2`, `DeleteObject`, `GetBucketVersioning`, politiques des deux utilisateurs S3), le minuteur et `OnFailure=` sous un vrai systemd.
 
@@ -330,9 +335,83 @@ Les propriétaires d'origine (`diguee_proprietaire`) sont gardés ; `diguee-migr
 
 ### Clôture (#16)
 
-Toutes les sauvegardes contiennent la table `participation`, donc les empreintes (ADR 0002) : à l'étape 4 de la Clôture, après la suppression de la table, `diguee sauvegarde supprimer-toutes -confirmer` (avec la clé d'écriture du serveur) supprime tout ce qui est sous `sauvegardes/`, vérifie que la liste est vide et que le compartiment n'est pas versionné (sinon : erreur, versions à supprimer à la main) ; puis `systemctl start diguee-sauvegarde` fait une nouvelle sauvegarde sans la table. Depuis Go : `sauvegarde.SupprimerToutes(ctx, compartiment)`. Les copies que la procédure ne voit pas restent à traiter à part : sauvegardes téléchargées pour un test de restauration (à effacer après chaque test), instantanés du VPS.
+Toutes les sauvegardes contiennent la table `participation`, donc les empreintes (ADR 0002) : à la Clôture, après la suppression de la table, `diguee cloturer` supprime tout ce qui est sous `sauvegardes/` (`sauvegarde.SupprimerToutes`, qui vérifie que la liste est vide et que le compartiment n'est pas versionné), puis fait elle-même une nouvelle sauvegarde sans la table : voir §12. `diguee sauvegarde supprimer-toutes -confirmer` reste disponible à la main. Les copies que la procédure ne voit pas restent à traiter à part : sauvegardes téléchargées pour un test de restauration (à effacer après chaque test), instantanés du VPS.
 
 ## 11. Pour les tickets suivants
 
 - **#15 (sauvegardes)** : fait, voir §10. À sauvegarder aussi hors ligne, une fois : l'en-tête LUKS et la phrase de secours (§4). Le volume chiffré ne remplace pas une sauvegarde chiffrée : les sauvegardes quittent le VPS chiffrées par `age`.
-- **#16 (clôture)** : la suppression de `participation` (puis la destruction de la clé de l'empreinte dans le KMS) demande le rôle propriétaire : une commande `diguee cloturer` lancée par une unité `diguee-cloturer.service` sous l'utilisateur `diguee-migrations`, avec `DIGUEE_POSTGRES_URL_MIGRATIONS` (`migrations.env`), comme `diguee-migrer.service`. Le rôle de l'application ne peut ni supprimer ni vider aucune table. Les sauvegardes du ticket #15 contiennent `participation` : appeler `sauvegarde.SupprimerToutes` (ou `diguee sauvegarde supprimer-toutes -confirmer`, sous l'utilisateur `diguee-sauvegarde` avec `/etc/diguee/sauvegarde.env`, §10 « Clôture ») après la suppression de la table, inscrire le nombre d'objets supprimés au procès-verbal, puis lancer une nouvelle sauvegarde ; effacer aussi les instantanés du VPS éventuels.
+- **#16 (clôture)** : fait, voir §12.
+
+## 12. Clôture (ticket #16)
+
+Spec §12, ADR 0002. À `DIGUEE_CLOTURE` (minuit UTC, ouverture + 6 mois par défaut), la consultation ferme ; ensuite, une procédure détruit les empreintes, toutes les sauvegardes qui les contiennent et la clé qui les calculait, renouvelle les clés du volume chiffré, et publie un procès-verbal. Chaque étape est inscrite au journal public (entrée `cloture`, champ `etape`), le procès-verbal aussi (entrée `proces_verbal`). Les réponses et les publications sont conservées.
+
+### Ce qui se fait tout seul (serveur)
+
+À la date de clôture, sans rien lancer : les pages du parcours affichent « Consultation close », aucun jeton ni code n'est plus délivré, le webhook WhatsApp ignore les messages (200 pour Meta) ; le tampon est écrit une dernière fois puis fermé. La **dernière publication quotidienne** est produite à l'heure habituelle (06:00 UTC) du **lendemain** du dernier lot (le plus souvent : le lendemain de la date de clôture), donc sur toutes les réponses ; aussitôt après, l'entrée `cloture` de l'étape `fermeture` est inscrite au journal. Le serveur doit tourner (s'il est arrêté, il la fait à son redémarrage, avec la publication du jour). Vérifier :
+
+```sh
+curl -s https://consultation.diguee.sn/journal.json | grep -o '"type":"cloture"[^}]*' | head
+```
+
+Pourquoi pas tout de suite à minuit : une publication par jour, toujours à la même heure, et aucune entrée du journal écrite à un instant lié à un envoi (choix prudent, au prix d'environ 30 heures).
+
+### Préparer la destruction (porteur, espace client OVHcloud)
+
+1. **Identité de clôture du KMS** : un nouveau certificat d'accès (identité IAM `diguee-cloture`), avec une politique qui n'autorise, sur la seule clé `diguee-empreinte`, que la lecture, la désactivation et la suppression (noms d'actions **à vérifier** dans l'IAM d'OVHcloud, par exemple `okms:apikms:serviceKey/get`, `…/deactivate`, `…/delete`). Le certificat du serveur ne peut que signer : il ne peut pas détruire la clé, et ne doit pas pouvoir le faire. Comme pour le ticket #5, de préférence à partir d'une demande créée sur le serveur :
+   ```sh
+   sudo openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+     -keyout /etc/diguee/kms-cloture.key -out /root/kms-cloture.csr -subj "/CN=diguee-cloture"
+   sudo chmod 600 /etc/diguee/kms-cloture.key   # certificat signé → /etc/diguee/kms-cloture.pem (0600)
+   ```
+2. **Identité du volume** : lui redonner, le temps du renouvellement, le droit de **chiffrer** avec la clé `diguee-volume` (`volume.sh renouveler` fait chiffrer une nouvelle clé du volume), puis le lui retirer.
+3. Sur le serveur, une fois (installations antérieures à ce ticket ; `roles.sql` le fait désormais) : `sudo -u postgres psql -c "GRANT pg_checkpoint TO diguee_proprietaire"` (le `CHECKPOINT` de la procédure).
+4. Arrêter la sauvegarde de nuit pendant la procédure : `sudo systemctl stop diguee-sauvegarde.timer` (la procédure supprime de toute façon tout objet apparu avant sa propre sauvegarde, et le procès-verbal exige que la plus ancienne sauvegarde restante soit la sienne).
+
+### Lancer la destruction
+
+```sh
+sudo systemctl start diguee-cloturer ; journalctl -u diguee-cloturer -o cat -n 100
+```
+
+`diguee cloturer` (utilisateur `diguee-migrations`, rôle propriétaire ; `diguee.env`, `migrations.env`, `sauvegarde.env`) fait, dans l'ordre, en inscrivant chaque étape au journal :
+
+| Étape | Ce qui est fait | Inscrit au journal |
+|---|---|---|
+| `verification` | consultation close ; fermeture inscrite par le serveur ; dernière publication présente, identique, et postérieure à toutes les réponses | jour et SHA-256 de la dernière publication, nombre de lignes de `reponse` et de `publication` |
+| (contrôle préalable) | le KMS accepte l'identité de clôture, le compartiment répond, `pg_dump`, `age` et la clé publique sont là : rien n'est supprimé sinon | — |
+| `suppression_participations` | `LOCK`, `TRUNCATE participation`, `DROP TABLE participation`, **dans la même transaction** que l'entrée du journal | nombre de participations supprimées, SHA-256 des ordres |
+| `liberation_espace` | `VACUUM (FULL, ANALYZE)` de chaque table, `CHECKPOINT` | SHA-256 des ordres |
+| `suppression_sauvegardes` | toutes les sauvegardes (`sauvegardes/…`), liste vide vérifiée, compartiment non versionné | nombre, SHA-256 de la liste des clés |
+| `nouvelle_sauvegarde` | supprime ce qui serait apparu entre-temps, puis sauvegarde (`pg_dump` \| `age`) sans la table ; elle doit être seule dans le compartiment | clé, taille, SHA-256 du fichier chiffré |
+| `destruction_cle_empreinte` | KMS : `GET` (état), `POST …/deactivate` (`cessation_of_operation`), `DELETE`, puis `GET` : introuvable | état final, SHA-256 des requêtes |
+| `renouvellement_volume` | **étape manuelle**, ci-dessous : la procédure s'arrête `EN ATTENTE` (sortie 0) | attestation : SHA-256 de la nouvelle clé chiffrée et de l'en-tête LUKS |
+| procès-verbal | contrôle final (plus de `participation`, réponses et dernière publication inchangées, chaîne du journal valide) | entrée `proces_verbal` : date, entrée et empreinte de chaque étape, nombres, tables et leurs lignes |
+
+**Choix : la nouvelle sauvegarde est faite par la procédure elle-même**, et non en lançant `diguee-sauvegarde.service` : un utilisateur sans privilège ne peut pas démarrer une unité, et les étapes doivent s'enchaîner sans trou. Même code que la sauvegarde de nuit (`sauvegarde.Faire`), avec la clé d'écriture S3 de `sauvegarde.env` (lue par systemd), le rôle propriétaire (lecture de toute la base) et la clé publique `age` (`LoadCredential`). Le fichier d'état de l'espace équipe n'est pas mis à jour (il appartient à `diguee-sauvegarde`) : la sauvegarde de nuit suivante le fera.
+
+**Échec** : la commande s'arrête à l'étape en échec, sort avec le code 1, écrit `ALERTE clôture` au journal et déclenche `diguee-alerte@` ; aucune étape suivante n'est faite. Corriger, puis relancer `systemctl start diguee-cloturer` : la commande relit le journal public et **reprend à la première étape qui manque** (une étape n'est inscrite que si la précédente est la dernière inscrite, et deux procédures ne tournent jamais ensemble). Si une étape a été faite mais que son inscription a échoué (panne au mauvais moment), elle est refaite : toutes sont sans effet la deuxième fois (table déjà absente, aucune sauvegarde à supprimer, clé déjà introuvable) ; le nombre inscrit peut alors être 0 ou -1 (table déjà absente), ce qui se lit dans le journal.
+
+### Renouveler les clés du volume (root, étape manuelle)
+
+Quand `journalctl -u diguee-cloturer` affiche `EN ATTENTE : … renouvellement des clés du volume chiffré` :
+
+```sh
+sudo /usr/local/lib/diguee/volume.sh renouveler      # DIGUEE_A_BLANC=1 pour voir les commandes sans rien faire
+sudo systemctl start diguee-cloturer                 # reprend : renouvellement inscrit, puis procès-verbal
+sudo systemctl start diguee-sauvegarde.timer         # sauvegardes de nuit (sans participation)
+```
+
+`volume.sh renouveler` : (1) WAL de PostgreSQL : `wal_recycle = off`, plusieurs `CHECKPOINT` et `pg_switch_wal()`, pour que les segments écrits avant la suppression de la table soient supprimés et non renommés pour resservir ; (2) arrêt de `diguee` et de PostgreSQL, et **réécriture de l'espace libre** du système de fichiers (fichier de zéros jusqu'au disque plein, puis supprimé) : les blocs de l'ancienne table et des anciens segments ; (3) **rechiffrement du volume avec une nouvelle clé maîtresse** (`cryptsetup reencrypt`, en ligne, en ne gardant que l'emplacement de la clé du KMS) : une ancienne copie de l'en-tête LUKS, avec l'ancienne clé ou l'ancienne phrase de secours, ne déchiffre plus rien ; `cryptsetup luksChangeKey` seul ne suffirait pas, car il ne change pas la clé maîtresse ; (4) nouvelle clé du volume chiffrée par le KMS (`diguee cle-volume creer`), ajoutée, essayée, l'ancienne retirée ; (5) **nouvelle phrase de secours** au clavier ; (6) redémarrage, nouvel en-tête dans `/root/diguee-luks-entete-….img`, attestation `/etc/diguee/volume-renouvele.json`. Ensuite, le porteur copie le nouvel en-tête et la nouvelle phrase hors ligne, et **détruit l'ancienne copie de l'en-tête et l'ancienne phrase**.
+
+**À vérifier sur un vrai VPS** (rien de cette étape n'a pu être essayé ici, faute de device-mapper) : `cryptsetup reencrypt` en ligne sur un volume monté (durée : quelques minutes pour 20 Go), le comportement de `--key-slot` (les autres emplacements retirés), la suppression effective des segments WAL avec `wal_recycle = off`. En cas de doute, faire l'étape volume éteint : `volume.sh secours` n'est pas nécessaire, `cryptsetup reencrypt` fonctionne aussi hors ligne.
+
+### Après
+
+- Supprimer `/etc/diguee/kms-cloture.*` et l'identité `diguee-cloture` dans l'espace client ; retirer à l'identité du volume le droit de chiffrer.
+- Effacer à la main ce que la procédure ne voit pas (rappel dans `docs/À faire par le porteur.md`) : **instantanés (snapshots) et sauvegardes automatiques du VPS** dans l'espace client, copies locales de sauvegardes téléchargées pour les tests de restauration, ancienne copie hors ligne de l'en-tête LUKS.
+- Vérifier le procès-verbal publié : `diguee verifier-journal https://consultation.diguee.sn/journal.json`, puis lire l'entrée `proces_verbal`.
+
+### Simulation
+
+`go test ./internal/cloture -run TestSimulationDeBoutEnBout -v` (avec `DIGUEE_TEST_POSTGRES_URL`, `pg_dump`, `pg_restore`, `age`) joue toute la Clôture sur une base de test, avec de vraies sauvegardes chiffrées dans un dossier et le faux KMS : fermeture, panne du KMS au milieu (alerte, arrêt), reprise, attente de l'étape du volume, procès-verbal ; puis il vérifie qu'aucune empreinte ne reste, ni dans la base (`pg_dump` complet), ni dans la sauvegarde restante (déchiffrée, convertie en SQL, restaurée et contrôlée), que réponses et publications sont intactes et que la chaîne du journal est valide (spec T12). En développement, `diguee cloturer -sans-volume` fait la procédure sans l'étape du volume (refusé en production).

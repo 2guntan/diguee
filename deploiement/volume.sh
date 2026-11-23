@@ -16,6 +16,12 @@
 #       ensuite : systemctl start diguee-volume postgresql@16-main diguee ;
 #   volume.sh fermer      (arrêt)
 #   volume.sh etat
+#   volume.sh renouveler  (Clôture, ticket #16, après la destruction de la
+#       clé de l'empreinte) : WAL de PostgreSQL non recyclé, espace libre
+#       réécrit, rechiffrement du volume avec une nouvelle clé maîtresse
+#       (cryptsetup reencrypt), nouvelle clé chiffrée par le KMS, nouvelle
+#       phrase de secours (au clavier), puis attestation lue par
+#       « diguee cloturer » ; voir deploiement/README.md §12 ;
 #
 # Variables (fichier /etc/diguee/volume.env, root 0600) : celles de
 # « diguee cle-volume » (DIGUEE_OVH_KMS_*) ; facultatives :
@@ -29,6 +35,7 @@ umask 077
 SOURCE="${DIGUEE_VOLUME_SOURCE:-/var/lib/diguee-volume/donnees.luks}"
 CLE_CHIFFREE="${DIGUEE_VOLUME_CLE_CHIFFREE:-/etc/diguee/volume.cle.jwe}"
 DIGUEE="${DIGUEE_EXECUTABLE:-/opt/diguee/diguee}"
+ATTESTATION="${DIGUEE_CLOTURE_ATTESTATION_VOLUME:-/etc/diguee/volume-renouvele.json}"
 NOM="diguee-donnees"
 POINT="/srv/diguee-donnees"
 A_BLANC="${DIGUEE_A_BLANC:-0}"
@@ -48,6 +55,16 @@ cle() {
 }
 
 ouvert() { [ -e "/dev/mapper/$NOM" ]; }
+
+# cle_nouvelle : comme cle, pour la clé chiffrée en cours de renouvellement.
+cle_nouvelle() {
+	"$DIGUEE" cle-volume dechiffrer -entree "$CLE_CHIFFREE.nouvelle"
+}
+
+# sql : une commande SQL en superutilisateur, sur la base diguee.
+sql() {
+	fais runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 -d diguee -c "$1"
+}
 
 monter() {
 	fais mkdir -p "$POINT"
@@ -146,8 +163,108 @@ etat)
 	cryptsetup status "$NOM" || true
 	mountpoint "$POINT" || true
 	;;
+renouveler)
+	# Clôture (ticket #16, spec §12 étape 5). À lancer après « diguee
+	# cloturer » arrêté EN ATTENTE sur le renouvellement du volume : la table
+	# participation est supprimée, l'espace libéré (VACUUM FULL, CHECKPOINT),
+	# les sauvegardes supprimées et la clé de l'empreinte détruite.
+	# NON ESSAYÉ SUR UN VRAI VPS (voir README §12, « à vérifier »).
+	ouvert || [ "$A_BLANC" = 1 ] || { echo "volume fermé : volume.sh ouvrir d'abord" >&2; exit 1; }
+	# Lancé à la main : l'accès au KMS du volume vient de volume.env.
+	if [ -z "${DIGUEE_OVH_KMS_ID:-}" ] && [ -r /etc/diguee/volume.env ]; then
+		set -a
+		# shellcheck source=/dev/null
+		. /etc/diguee/volume.env
+		set +a
+	fi
+	[ -e "$CLE_CHIFFREE.nouvelle" ] && { echo "$CLE_CHIFFREE.nouvelle existe (essai interrompu ?) : la vérifier, puis la supprimer" >&2; exit 1; }
+	# 1. WAL : les segments écrits avant la suppression de la table
+	#    contiennent les empreintes. Sans recyclage, les segments dont
+	#    PostgreSQL n'a plus besoin sont supprimés (et non renommés pour
+	#    resservir) ; plusieurs bascules et points de contrôle les rendent
+	#    inutiles.
+	sql "ALTER SYSTEM SET wal_recycle = off"
+	sql "SELECT pg_reload_conf()"
+	for _ in 1 2 3 4; do
+		sql "CHECKPOINT"
+		sql "SELECT pg_switch_wal()"
+	done
+	sql "CHECKPOINT"
+	sql "ALTER SYSTEM RESET wal_recycle"
+	sql "SELECT pg_reload_conf()"
+	# 2. Espace libre du système de fichiers réécrit (les blocs des fichiers
+	#    supprimés : ancienne table, anciens segments WAL), services arrêtés
+	#    pour que le disque plein ne gêne personne.
+	fais systemctl stop diguee.service postgresql@16-main.service
+	if [ "$A_BLANC" = 1 ]; then
+		echo "+ dd if=/dev/zero of=$POINT/.effacement bs=1M (jusqu'au disque plein) ; sync ; rm"
+	else
+		dd if=/dev/zero of="$POINT/.effacement" bs=1M status=none 2>/dev/null || true
+		sync
+		rm -f "$POINT/.effacement"
+		sync
+	fi
+	# 3. Nouvelle clé maîtresse du volume (rechiffrement complet, en ligne) :
+	#    une ancienne copie de l'en-tête LUKS, avec l'ancienne clé ou
+	#    l'ancienne phrase de secours, ne déchiffre plus le volume. Seul
+	#    l'emplacement de la clé du KMS est gardé (les autres sont retirés).
+	if [ "$A_BLANC" = 1 ]; then
+		echo "+ cryptsetup reencrypt --key-file=<(clé du KMS) --key-slot <emplacement de la clé du KMS> $SOURCE"
+	else
+		# L'emplacement de la clé du KMS : celui qu'elle ouvre.
+		SLOT=""
+		for n in $(seq 0 31); do
+			if cryptsetup open --test-passphrase --key-slot "$n" --key-file=<(cle) "$SOURCE" 2>/dev/null; then
+				SLOT="$n"
+				break
+			fi
+		done
+		[ -n "$SLOT" ] || { echo "aucun emplacement LUKS ne s'ouvre avec la clé du KMS" >&2; exit 1; }
+		cryptsetup reencrypt --batch-mode --key-file=<(cle) --key-slot "$SLOT" "$SOURCE"
+	fi
+	# 4. Nouvelle clé du volume, chiffrée par le KMS (l'identité du volume
+	#    doit avoir de nouveau le droit encrypt, README §12), ajoutée, puis
+	#    l'ancienne retirée.
+	fais "$DIGUEE" cle-volume creer -sortie "$CLE_CHIFFREE.nouvelle"
+	if [ "$A_BLANC" = 1 ]; then
+		echo "+ cryptsetup luksAddKey --key-file=<(ancienne clé) $SOURCE <(nouvelle clé)"
+		echo "+ cryptsetup open --test-passphrase --key-file=<(nouvelle clé) $SOURCE"
+		echo "+ cryptsetup luksRemoveKey --key-file=<(ancienne clé) $SOURCE"
+	else
+		cryptsetup luksAddKey --pbkdf argon2id --key-file=<(cle) "$SOURCE" <(cle_nouvelle)
+		cryptsetup open --test-passphrase --key-file=<(cle_nouvelle) "$SOURCE"
+		cryptsetup luksRemoveKey --key-file=<(cle) "$SOURCE"
+	fi
+	fais mv "$CLE_CHIFFREE.nouvelle" "$CLE_CHIFFREE"
+	# 5. Nouvelle phrase de secours, au clavier (l'ancienne a été retirée
+	#    avec les autres emplacements) : la noter hors ligne, détruire
+	#    l'ancienne.
+	echo "Nouvelle phrase de secours du volume : 6 mots au moins, à conserver hors ligne ; l'ancienne ne sert plus." >&2
+	if [ "$A_BLANC" = 1 ]; then
+		echo "+ cryptsetup luksAddKey --key-file=<(clé du KMS) $SOURCE"
+	else
+		cryptsetup luksAddKey --pbkdf argon2id --key-file=<(cle) "$SOURCE"
+	fi
+	# 6. Services redémarrés, nouvel en-tête à sauvegarder hors ligne,
+	#    attestation.
+	fais systemctl start postgresql@16-main.service diguee.service
+	ENTETE="/root/diguee-luks-entete-$(date -u +%Y%m%dT%H%M%SZ).img"
+	fais cryptsetup luksHeaderBackup "$SOURCE" --header-backup-file "$ENTETE"
+	if [ "$A_BLANC" = 1 ]; then
+		echo "+ attestation écrite dans $ATTESTATION"
+	else
+		sha_cle="$(sha256sum "$CLE_CHIFFREE" | cut -d' ' -f1)"
+		sha_entete="$(sha256sum "$ENTETE" | cut -d' ' -f1)"
+		umask 022
+		printf '{"date":"%s","sha256_cle_chiffree":"%s","sha256_entete_luks":"%s","rechiffrement":true,"espace_libre_efface":true}\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha_cle" "$sha_entete" >"$ATTESTATION.tmp"
+		mv "$ATTESTATION.tmp" "$ATTESTATION"
+		chmod 0644 "$ATTESTATION"
+	fi
+	echo "Volume renouvelé. Copier $ENTETE hors ligne (et détruire l'ancienne copie de l'en-tête et l'ancienne phrase de secours), puis : systemctl start diguee-cloturer" >&2
+	;;
 *)
-	sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
 	exit 2
 	;;
 esac
