@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2guntan/diguee/internal/altcha"
 	"github.com/2guntan/diguee/internal/base/basetest"
 	"github.com/2guntan/diguee/internal/journal"
 	"github.com/2guntan/diguee/internal/session"
@@ -47,6 +49,9 @@ func TestProductionRefuseLEmpreinteurFactice(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "l'intégration whatsapp est en mode fake (réglage : DIGUEE_WHATSAPP)") {
 		t.Errorf("la simulation WhatsApp devrait aussi bloquer : %v", err)
+	}
+	if !strings.Contains(err.Error(), "l'intégration captcha_altcha est en mode fake (réglage : DIGUEE_CLE_ALTCHA)") {
+		t.Errorf("la clé de développement du captcha devrait aussi bloquer : %v", err)
 	}
 	if !strings.Contains(err.Error(), "questionnaire v1") {
 		t.Errorf("les choix provisoires du questionnaire devraient aussi bloquer : %v", err)
@@ -219,6 +224,23 @@ func TestMiseEnProductionAuDemarrage(t *testing.T) {
 	}
 }
 
+var reDefiAltcha = regexp.MustCompile(`data-altcha-algorithme="([^"]*)" data-altcha-defi="([^"]*)" data-altcha-max="([^"]*)" data-altcha-sel="([^"]*)" data-altcha-signature="([^"]*)"`)
+
+// resoudreAltcha lit le défi ALTCHA de la page de vérification et le résout.
+func resoudreAltcha(t *testing.T, page string) string {
+	t.Helper()
+	m := reDefiAltcha.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatal("défi ALTCHA absent de la page de vérification")
+	}
+	max, _ := strconv.ParseInt(m[3], 10, 64)
+	s, err := altcha.Resoudre(altcha.Defi{Algorithm: m[1], Challenge: m[2], MaxNumber: max, Salt: html.UnescapeString(m[4]), Signature: m[5]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 var reJetonPage = regexp.MustCompile(`<p class="jeton">(DIGUEE [2-9]{4}-[A-Z]{2})</p>`)
 
 // verifierParWhatsApp fait la vérification inversée sur le serveur lancé, en
@@ -247,10 +269,13 @@ func verifierParWhatsApp(t *testing.T, client *http.Client, racine, expediteur s
 		}
 		return r, string(corps)
 	}
-	if r, _ := faire(http.MethodPost, "/verifier", url.Values{}); r.StatusCode != http.StatusSeeOther {
+	// Captcha ALTCHA : le test fait le calcul du navigateur (statique/altcha.js).
+	_, corps := faire(http.MethodGet, "/verifier", nil)
+	solution := resoudreAltcha(t, corps)
+	if r, _ := faire(http.MethodPost, "/verifier", url.Values{altcha.Champ: {solution}}); r.StatusCode != http.StatusSeeOther {
 		t.Fatalf("jeton : %d", r.StatusCode)
 	}
-	_, corps := faire(http.MethodGet, "/verifier/whatsapp", nil)
+	_, corps = faire(http.MethodGet, "/verifier/whatsapp", nil)
 	m := reJetonPage.FindStringSubmatch(corps)
 	if m == nil {
 		t.Fatal("jeton absent de la page")

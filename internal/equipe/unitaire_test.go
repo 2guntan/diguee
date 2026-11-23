@@ -95,39 +95,6 @@ func TestMotDePasse(t *testing.T) {
 	}
 }
 
-func TestLimiteur(t *testing.T) {
-	l := NouveauLimiteur(3, time.Minute)
-	t0 := time.Unix(1_800_000_000, 0)
-	for i := range 3 {
-		if l.Bloque("x", t0) {
-			t.Fatalf("bloqué après %d échecs", i)
-		}
-		l.Echec("x", t0.Add(time.Duration(i)*time.Second))
-	}
-	if !l.Bloque("x", t0.Add(3*time.Second)) || l.Bloque("y", t0) {
-		t.Error("blocage attendu pour x seulement")
-	}
-	if l.Bloque("x", t0.Add(time.Minute)) {
-		t.Error("le premier échec est sorti de la fenêtre")
-	}
-	l.Effacer("x")
-	if l.Bloque("x", t0) {
-		t.Error("effacé")
-	}
-}
-
-func TestSelSourceSansAdresse(t *testing.T) {
-	var s selSource
-	t0 := time.Unix(1_800_000_000, 0)
-	a := s.cle("192.0.2.1", t0)
-	if strings.Contains(a, "192.0.2") || a != s.cle("192.0.2.1", t0.Add(time.Hour)) || a == s.cle("192.0.2.2", t0) {
-		t.Errorf("clé de source : %q", a)
-	}
-	if a == s.cle("192.0.2.1", t0.Add(24*time.Hour)) {
-		t.Error("le sel doit changer chaque jour")
-	}
-}
-
 func TestSessionsHuitHeures(t *testing.T) {
 	t0 := time.Unix(1_800_000_000, 0)
 	maintenant := t0

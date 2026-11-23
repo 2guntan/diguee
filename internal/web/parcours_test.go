@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/2guntan/diguee/internal/altcha"
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/base/basetest"
 	"github.com/2guntan/diguee/internal/config"
@@ -62,6 +65,29 @@ type banc struct {
 	verificateur *whatsapp.Verificateur
 	sessions     *session.Magasin
 	horloge      *horloge
+	altcha       *altcha.Altcha
+	limite       *antifraude.LimiteEmpreinte
+	surveillance *antifraude.Surveillance
+	ralentisseur *antifraude.Ralentisseur
+	attentes     *attentes
+}
+
+// attentes note les délais du ralentisseur sans dormir.
+type attentes struct {
+	mu sync.Mutex
+	ds []time.Duration
+}
+
+func (a *attentes) attendre(_ context.Context, d time.Duration) {
+	a.mu.Lock()
+	a.ds = append(a.ds, d)
+	a.mu.Unlock()
+}
+
+func (a *attentes) liste() []time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]time.Duration(nil), a.ds...)
 }
 
 // horloge est une heure réglable par les tests (jetons et sessions).
@@ -99,8 +125,20 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	}
 	j := &journalSur{}
 	journal := slog.New(slog.NewJSONHandler(j, nil))
-	tp := tampon.Nouveau(tampon.Options{Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal})
 	h := &horloge{t: time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC)}
+	surveillance := antifraude.NouvelleSurveillance(h.maintenant, journal)
+	limite := antifraude.NouvelleLimiteEmpreinte(cfg.VerifParEmpreinte24h, h.maintenant)
+	tp := tampon.Nouveau(tampon.Options{Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
+		Surveillance: surveillance})
+	// Difficulté faible : les tests résolvent des centaines de défis.
+	captcha, err := altcha.Nouveau(altcha.Options{Cle: []byte(strings.Repeat("k", 32)), Difficulte: 2000, Maintenant: h.maintenant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	att := &attentes{}
+	ralentisseur := antifraude.NouveauRalentisseur(antifraude.OptionsRalentisseur{
+		ParHeure: cfg.IPParHeure, Maintenant: h.maintenant, Attendre: att.attendre, Journal: journal,
+	})
 	sessions := session.NouveauMagasin()
 	sessions.Maintenant = h.maintenant
 	empreinteur := empreinte.NouveauHMACLocal(nil)
@@ -110,6 +148,7 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 	}
 	v, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
 		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions, Prefixes: cfg.PrefixesAutorises,
+		Limiteur: limite, Surveillance: surveillance,
 		Duree: cfg.JetonDuree, Maintenant: h.maintenant, Journal: journal,
 	})
 	if err != nil {
@@ -120,12 +159,13 @@ func nouveauBanc(t *testing.T, env map[string]string) *banc {
 		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
 		Maintenant:  h.maintenant,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions,
-		WhatsApp: wa, Verificateur: v,
+		WhatsApp: wa, Verificateur: v, Altcha: captcha, Ralentisseur: ralentisseur,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j, whatsapp: wa, verificateur: v, sessions: sessions, horloge: h}
+	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j, whatsapp: wa, verificateur: v, sessions: sessions, horloge: h,
+		altcha: captcha, limite: limite, surveillance: surveillance, ralentisseur: ralentisseur, attentes: att}
 }
 
 func (b *banc) compter(t *testing.T) (participations, reponses int) {
@@ -228,16 +268,36 @@ func numeroDeTest(i int) (expediteur, normalise string) {
 	return "221" + n, "+221" + n
 }
 
-var reJeton = regexp.MustCompile(`<p class="jeton">(DIGUEE [2-9]{4}-[A-Z]{2})</p>`)
+var (
+	reJeton      = regexp.MustCompile(`<p class="jeton">(DIGUEE [2-9]{4}-[A-Z]{2})</p>`)
+	reDefiAltcha = regexp.MustCompile(`data-altcha-algorithme="([^"]*)" data-altcha-defi="([^"]*)" data-altcha-max="([^"]*)" data-altcha-sel="([^"]*)" data-altcha-signature="([^"]*)"`)
+)
 
-// demanderJeton ouvre la vérification et renvoie le jeton affiché.
+// resoudreAltcha lit le défi ALTCHA écrit dans la page de vérification et le
+// résout, comme le fait le navigateur avec /statique/altcha.js.
+func resoudreAltcha(t *testing.T, corps string) string {
+	t.Helper()
+	m := reDefiAltcha.FindStringSubmatch(corps)
+	if m == nil {
+		t.Fatal("défi ALTCHA absent de la page de vérification")
+	}
+	max, _ := strconv.ParseInt(m[3], 10, 64)
+	s, err := altcha.Resoudre(altcha.Defi{Algorithm: m[1], Challenge: m[2], MaxNumber: max, Salt: html.UnescapeString(m[4]), Signature: m[5]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// demanderJeton ouvre la vérification, résout le captcha et renvoie le jeton
+// affiché.
 func demanderJeton(t *testing.T, n *navigateur) string {
 	t.Helper()
 	p := n.get("/verifier")
 	if m := reFormAction.FindStringSubmatch(p.corps); m == nil || m[1] != "/verifier" {
 		t.Fatalf("formulaire de vérification absent : %d", p.statut)
 	}
-	p = n.post("/verifier", url.Values{})
+	p = n.post("/verifier", url.Values{altcha.Champ: {resoudreAltcha(t, p.corps)}})
 	if p.statut != http.StatusSeeOther || p.location != "/verifier/whatsapp" || n.cookie == nil {
 		t.Fatalf("création du jeton : %d vers %q", p.statut, p.location)
 	}
@@ -407,7 +467,9 @@ func TestDoublonEnBaseEtDansLeTampon(t *testing.T) {
 	if err := b.tampon.Vider(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// En base.
+	// En base. Le même numéro a déjà été vérifié 3 fois aujourd'hui : on se
+	// place le lendemain, sinon la limite par empreinte répondrait d'abord.
+	b.horloge.avancer(24 * time.Hour)
 	if p := parcourir(t, b, expediteur, formulaireVoulu(2)); p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
 		t.Fatalf("doublon en base : %d", p.statut)
 	}
@@ -495,6 +557,10 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 	_, css := get(t, b.srv, "/statique/diguee.css")
 	_, logo := get(t, b.srv, "/statique/logo.svg")
 	_, js := get(t, b.srv, "/statique/verifier.js")
+	_, jsAltcha := get(t, b.srv, "/statique/altcha.js")
+	if !strings.Contains(jsAltcha, "crypto.subtle.digest") {
+		t.Fatal("/statique/altcha.js absent")
+	}
 	n := &navigateur{t: t, h: b.srv}
 	expediteur, _ := numeroDeTest(11)
 	pages := map[string]page{"verifier": n.get("/verifier")}
@@ -516,24 +582,38 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 	b.horloge.avancer(11 * time.Minute)
 	pages["jeton expiré"] = n2.get("/verifier/whatsapp")
 	pages["simulation"] = n2.get("/dev/whatsapp")
+	n3 := &navigateur{t: t, h: b.srv}
+	pages["sans javascript"] = n3.get("/verifier/sans-javascript")
+	pages["sms provisoire"] = n3.get("/verifier/sms")
+	pages["captcha refusé"] = n3.post("/verifier", url.Values{altcha.Champ: {"x"}})
 	for nom, p := range pages {
-		avecScript := nom == "jeton" || nom == "jeton pas encore reçu"
+		// Deux pages seulement chargent un script, servi depuis le domaine,
+		// et leur CSP est la seule à l'autoriser : la page du jeton
+		// (interrogation) et la page de vérification (captcha ALTCHA, sans
+		// connexion au serveur).
+		script := map[string]string{"jeton": "verifier.js", "jeton pas encore reçu": "verifier.js",
+			"verifier": "altcha.js", "captcha refusé": "altcha.js"}[nom]
+		avecScript := script == "verifier.js"
 		poids := len(p.corps) + len(css) + len(logo)
-		if avecScript {
+		switch script {
+		case "verifier.js":
 			poids += len(js)
+		case "altcha.js":
+			poids += len(jsAltcha)
 		}
 		if poids >= 100*1024 {
 			t.Errorf("%s pèse %d octets", nom, poids)
 		}
 		bas := strings.ToLower(p.corps)
-		// Seule la page du jeton charge un script, servi depuis le domaine,
-		// et sa CSP est la seule à l'autoriser.
 		scripts := strings.Count(bas, "<script")
 		csp := p.entetes.Get("Content-Security-Policy")
-		if avecScript {
-			if scripts != 1 || !strings.Contains(p.corps, `<script src="/statique/verifier.js" defer></script>`) ||
+		if script != "" {
+			if scripts != 1 || !strings.Contains(p.corps, `<script src="/statique/`+script+`" defer></script>`) ||
 				!strings.Contains(csp, "script-src 'self'") || strings.Contains(csp, "unsafe") {
 				t.Errorf("%s : script ou CSP inattendus (%q)", nom, csp)
+			}
+			if script == "altcha.js" && strings.Contains(csp, "connect-src") {
+				t.Errorf("%s : le captcha n'a besoin d'aucune connexion (%q)", nom, csp)
 			}
 		} else if scripts != 0 || strings.Contains(csp, "script-src") {
 			t.Errorf("%s : aucun script attendu", nom)
@@ -572,6 +652,10 @@ func TestPagesDuParcoursLegeres(t *testing.T) {
 		"jeton expiré":          "Ce message de vérification a expiré.",
 		"deja":                  "Ce numéro a déjà participé. Merci\u00a0!",
 		"simulation":            "Simulation de WhatsApp",
+		"verifier":              "votre navigateur fait un petit calcul",
+		"captcha refusé":        "La vérification anti-robot n'a pas abouti.",
+		"sans javascript":       "Vérifier mon numéro par SMS",
+		"sms provisoire":        "La vérification par SMS n'est pas encore ouverte.",
 	} {
 		if !strings.Contains(texte(pages[nom].corps), attendu) {
 			t.Errorf("%s : %q attendu", nom, attendu)

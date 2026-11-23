@@ -2,19 +2,24 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/2guntan/diguee/internal/altcha"
 	"github.com/2guntan/diguee/internal/qr"
 	"github.com/2guntan/diguee/internal/whatsapp"
 )
 
 // Vérification inversée par WhatsApp (spec §5.1, ADR 0009) :
 //
-//	GET  /verifier            explication, bouton « Obtenir mon message »
-//	POST /verifier            ouvre une session non vérifiée et tire un jeton
+//	GET  /verifier            explication, captcha ALTCHA, bouton « Obtenir mon message »
+//	POST /verifier            limite par adresse, captcha, puis ouvre une session
+//	                          non vérifiée et tire un jeton
+//	GET  /verifier/sans-javascript   explication pour qui n'a pas JavaScript
+//	GET  /verifier/sms        parcours par SMS (provisoire, ticket #10)
 //	GET  /verifier/whatsapp   jeton, lien wa.me (mobile), QR code (ordinateur)
 //	POST /verifier/whatsapp   bouton « J'ai envoyé le message » (sans JavaScript)
 //	GET  /verifier/etat       interrogé toutes les 3 s par /statique/verifier.js
@@ -36,17 +41,56 @@ func (s *Serveur) verifierPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/questionnaire", http.StatusSeeOther)
 		return
 	}
-	s.rendre(w, r, http.StatusOK, "verifier", s.donnees())
+	s.rendreVerifier(w, r, http.StatusOK, "")
+}
+
+// rendreVerifier affiche la page de vérification avec un nouveau défi ALTCHA,
+// que le script /statique/altcha.js résout dans le navigateur (spec §4,
+// étape 2). erreur est la clé d'un message, ou vide.
+func (s *Serveur) rendreVerifier(w http.ResponseWriter, r *http.Request, statut int, erreur string) {
+	defi, err := s.opt.Altcha.NouveauDefi()
+	if err != nil {
+		s.opt.Journal.Error("création du défi ALTCHA", "erreur", err)
+		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
+		return
+	}
+	d := s.donnees()
+	d.Defi = &defi
+	d.Erreur = erreur
+	d.Script = scriptAltcha
+	w.Header().Set("Content-Security-Policy", cspCaptcha)
+	s.rendre(w, r, statut, "verifier", d)
 }
 
 // creerJeton ouvre une session non vérifiée (ou reprend la session en cours)
-// et lui attribue un nouveau jeton.
+// et lui attribue un nouveau jeton. Avant toute création de jeton :
 //
-// Ticket #8 : le captcha ALTCHA sera vérifié ici, avant toute création de
-// jeton (spec §4, étape 2).
+//  1. la demande est comptée par adresse (HMAC à sel quotidien) et, au-delà
+//     de DIGUEE_IP_PAR_HEURE dans l'heure, ralentie, sans jamais être
+//     bloquée (spec §7) ;
+//  2. la solution ALTCHA est vérifiée (signature, expiration, solution,
+//     usage unique). Sans solution, la personne n'a probablement pas
+//     JavaScript : elle est dirigée vers la page qui l'explique.
 func (s *Serveur) creerJeton(w http.ResponseWriter, r *http.Request) {
+	s.opt.Ralentisseur.Freiner(r)
 	if etat, ok := s.opt.Sessions.Lire(r); ok && etat.Verifiee {
 		http.Redirect(w, r, "/questionnaire", http.StatusSeeOther)
+		return
+	}
+	switch err := s.opt.Altcha.Verifier(r.PostForm.Get(altcha.Champ)); {
+	case err == nil:
+	case errors.Is(err, altcha.ErrAbsente):
+		http.Redirect(w, r, "/verifier/sans-javascript", http.StatusSeeOther)
+		return
+	case errors.Is(err, altcha.ErrSaturee):
+		s.opt.Journal.Error("captcha ALTCHA : mémoire des solutions pleine")
+		s.rendre(w, r, http.StatusServiceUnavailable, "indisponible", s.donnees())
+		return
+	case errors.Is(err, altcha.ErrExpiree):
+		s.rendreVerifier(w, r, http.StatusBadRequest, "verif.captcha.expire")
+		return
+	default:
+		s.rendreVerifier(w, r, http.StatusBadRequest, "verif.captcha.invalide")
 		return
 	}
 	id, err := s.opt.Sessions.Ouvrir(w, r)
@@ -103,7 +147,7 @@ func (s *Serveur) pageJeton(w http.ResponseWriter, r *http.Request) {
 			// Le SVG ne contient que des nombres et le libellé échappé.
 			d.QR = template.HTML(code.SVG(s.langue(r).T("verif.whatsapp.qr.libelle")))
 		}
-		d.Script = true
+		d.Script = scriptVerifier
 		w.Header().Set("Content-Security-Policy", cspAvecScript)
 		if r.Method == http.MethodPost {
 			d.Erreur = "verif.whatsapp.pas_encore"

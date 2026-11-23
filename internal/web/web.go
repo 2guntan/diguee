@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/2guntan/diguee/internal/altcha"
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
@@ -34,7 +36,8 @@ var fichiersStatiques embed.FS
 
 // Pages servies, chacune avec son gabarit.
 var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
-	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal"}
+	"verifier", "verifier_whatsapp", "dev_whatsapp", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree", "journal",
+	"sans_javascript", "verifier_sms"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -45,6 +48,18 @@ const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'sel
 // les 3 secondes (spec §5.1). Le script est servi depuis le domaine.
 const cspAvecScript = "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self'; " +
 	"font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// cspCaptcha est la politique de la page qui calcule le captcha ALTCHA
+// (spec §4, étape 2) : le script, servi depuis le domaine, n'a besoin
+// d'aucune connexion, le défi étant écrit dans la page.
+const cspCaptcha = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+	"font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// Scripts servis depuis le domaine, chacun autorisé par la CSP de sa seule page.
+const (
+	scriptVerifier = "/statique/verifier.js" // page du jeton : interrogation toutes les 3 s
+	scriptAltcha   = "/statique/altcha.js"   // page de vérification : preuve de travail
+)
 
 // Compteur donne le nombre de réponses enregistrées.
 type Compteur interface {
@@ -80,6 +95,11 @@ type Options struct {
 	// elle n'existe jamais en production.
 	WhatsApp     *whatsapp.Integration
 	Verificateur *whatsapp.Verificateur
+	// Anti-fraude avant la vérification (spec §7, ADR 0007) : le captcha
+	// ALTCHA, obligatoire pour servir le parcours, et la limite par adresse
+	// (construite d'après DIGUEE_IP_PAR_HEURE si nil).
+	Altcha       *altcha.Altcha
+	Ralentisseur *antifraude.Ralentisseur
 }
 
 // Serveur sert les pages publiques.
@@ -100,6 +120,11 @@ func Nouveau(opt Options) (*Serveur, error) {
 	}
 	if opt.Questionnaire == nil {
 		opt.Questionnaire = questionnaire.Courant()
+	}
+	if opt.Ralentisseur == nil {
+		opt.Ralentisseur = antifraude.NouveauRalentisseur(antifraude.OptionsRalentisseur{
+			ParHeure: opt.Config.IPParHeure, Maintenant: opt.Maintenant, Journal: opt.Journal,
+		})
 	}
 	if opt.WhatsApp != nil && opt.WhatsApp.Fausse() && opt.Config.Env == config.Production {
 		return nil, fmt.Errorf("la simulation WhatsApp (DIGUEE_WHATSAPP=fake) est interdite en production")
@@ -154,6 +179,8 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("POST /verifier/whatsapp", s.ouvert(s.pageJeton))
 	s.mux.HandleFunc("GET /verifier/etat", s.ouvert(s.etatJeton))
+	s.mux.HandleFunc("GET /verifier/sans-javascript", s.ouvert(s.page("sans_javascript")))
+	s.mux.HandleFunc("GET /verifier/sms", s.ouvert(s.page("verifier_sms")))
 	s.mux.HandleFunc("GET /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
 	s.mux.HandleFunc("POST /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
 	s.mux.HandleFunc("POST /questionnaire/recapitulatif", s.ouvert(s.avecSession(s.recapitulatif)))
@@ -201,7 +228,8 @@ type Donnees struct {
 	Jeton      string        // « DIGUEE 4821-KX »
 	LienWaMe   string        // https://wa.me/<numéro>?text=<jeton>
 	QR         template.HTML // le même lien en QR code (SVG)
-	Script     bool          // la page charge /statique/verifier.js
+	Script     string        // script chargé par la page (scriptVerifier ou scriptAltcha)
+	Defi       *altcha.Defi  // page de vérification : défi du captcha
 	Simulation bool          // DIGUEE_WHATSAPP=fake : lien vers la page de simulation
 	StatutDev  int           // page de simulation : statut renvoyé par le webhook
 

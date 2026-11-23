@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"net"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/totp"
 )
 
@@ -50,9 +50,11 @@ type Service struct {
 	sessions   *Sessions
 	maintenant func() time.Time
 
-	parCompte *Limiteur
-	parSource *Limiteur
-	sources   selSource
+	// Compteurs d'échecs en mémoire (paquet antifraude) ; l'adresse est
+	// remplacée par un HMAC à sel quotidien, jamais conservée ni journalisée.
+	parCompte *antifraude.Fenetre
+	parSource *antifraude.Fenetre
+	sources   antifraude.Anonymiseur
 
 	mu         sync.Mutex
 	dernierPas map[string]int64 // dernier pas TOTP accepté, par membre
@@ -69,8 +71,8 @@ func NouveauService(m Magasin, c *Chiffreur, s *Sessions, maintenant func() time
 	}
 	return &Service{
 		magasin: m, chiffreur: c, sessions: s, maintenant: maintenant,
-		parCompte:  NouveauLimiteur(EssaisParCompte, FenetreCompte),
-		parSource:  NouveauLimiteur(EssaisParSource, FenetreSource),
+		parCompte:  antifraude.NouvelleFenetre(EssaisParCompte, EssaisParCompte, FenetreCompte),
+		parSource:  antifraude.NouvelleFenetre(EssaisParSource, EssaisParSource, FenetreSource),
 		dernierPas: map[string]int64{},
 		plancher:   totp.Pas(maintenant()),
 	}
@@ -257,14 +259,6 @@ func (s *Service) consommer(id string, secret []byte, code string, t time.Time) 
 	return ok
 }
 
-// hote retire le port de l'adresse de la requête.
-func hote(adresse string) string {
-	if h, _, err := net.SplitHostPort(adresse); err == nil {
-		return h
-	}
-	return adresse
-}
-
 // Connecter vérifie l'identifiant, le mot de passe et le code TOTP, tous trois
 // obligatoires. Elle renvoie ErrConnexion sans dire ce qui a échoué, ou
 // ErrTropDEssais si les échecs récents bloquent l'identifiant ou l'adresse.
@@ -273,13 +267,13 @@ func (s *Service) Connecter(ctx context.Context, identifiant, motDePasse, code, 
 	t := s.maintenant()
 	identifiant = NormaliserIdentifiant(identifiant)
 	cleCompte := "compte:" + identifiant
-	cleSource := "source:" + s.sources.cle(hote(adresse), t)
-	if s.parCompte.Bloque(cleCompte, t) || s.parSource.Bloque(cleSource, t) {
+	cleSource := "source:" + s.sources.Cle(adresse, t)
+	if s.parCompte.Atteint(cleCompte, t) || s.parSource.Atteint(cleSource, t) {
 		return Membre{}, ErrTropDEssais
 	}
 	echec := func() (Membre, error) {
-		s.parCompte.Echec(cleCompte, t)
-		s.parSource.Echec(cleSource, t)
+		s.parCompte.Ajouter(cleCompte, t)
+		s.parSource.Ajouter(cleSource, t)
 		return Membre{}, ErrConnexion
 	}
 	if !reIdentifiant.MatchString(identifiant) {

@@ -41,22 +41,33 @@ type Sessions interface {
 }
 
 // Limiteur borne le nombre de vérifications par empreinte (spec §7 :
-// DIGUEE_VERIF_PAR_EMPREINTE_24H). Il est branché par le ticket #8 ; nil :
-// pas de limite.
+// DIGUEE_VERIF_PAR_EMPREINTE_24H) : antifraude.LimiteEmpreinte. Autoriser
+// compte la tentative et dit si elle est permise. nil : pas de limite.
 type Limiteur interface {
 	Autoriser(e empreinte.Empreinte) bool
 }
 
+// Surveillance reçoit les métriques agrégées (antifraude.Surveillance) : ici,
+// le préfixe de chaque numéro accepté, sans rien d'autre. nil : aucune.
+type Surveillance interface {
+	Compter(dimension, valeur string)
+}
+
+// DimensionPrefixe est la dimension des métriques par préfixe
+// (antifraude.DimensionPrefixe).
+const DimensionPrefixe = "prefixe"
+
 // OptionsVerificateur regroupe les dépendances du vérificateur.
 type OptionsVerificateur struct {
-	Empreinteur empreinte.Empreinteur
-	Doublons    Doublons
-	Sessions    Sessions
-	Limiteur    Limiteur         // facultatif (ticket #8)
-	Prefixes    []string         // DIGUEE_PREFIXES_AUTORISES
-	Duree       time.Duration    // DIGUEE_JETON_DUREE
-	Maintenant  func() time.Time // time.Now par défaut
-	Journal     *slog.Logger     // slog.Default() par défaut
+	Empreinteur  empreinte.Empreinteur
+	Doublons     Doublons
+	Sessions     Sessions
+	Limiteur     Limiteur         // facultatif : limite par empreinte
+	Surveillance Surveillance     // facultatif : métriques par préfixe
+	Prefixes     []string         // DIGUEE_PREFIXES_AUTORISES
+	Duree        time.Duration    // DIGUEE_JETON_DUREE
+	Maintenant   func() time.Time // time.Now par défaut
+	Journal      *slog.Logger     // slog.Default() par défaut
 }
 
 // Jeton est un jeton affiché à une session.
@@ -105,6 +116,7 @@ type Metriques struct {
 	NumerosRefuses   atomic.Int64 // hors +221, mal formé ou préfixe non autorisé
 	JetonsInconnus   atomic.Int64 // jeton inconnu, expiré, ou message sans jeton
 	SecondExpediteur atomic.Int64 // jeton déjà utilisé reçu d'un autre expéditeur
+	Limitees         atomic.Int64 // refusées par la limite par empreinte
 }
 
 // NouveauVerificateur prépare un vérificateur vide.
@@ -259,7 +271,12 @@ func (v *Verificateur) verifier(ctx context.Context, session, expediteur string)
 	if err != nil {
 		return 0, err
 	}
+	if v.opt.Surveillance != nil {
+		// « +221 » puis le préfixe autorisé : une valeur d'une liste fermée.
+		v.opt.Surveillance.Compter(DimensionPrefixe, numero[4:6])
+	}
 	if v.opt.Limiteur != nil && !v.opt.Limiteur.Autoriser(emp) {
+		v.m.Limitees.Add(1)
 		return Limitee, nil
 	}
 	deja, err := v.opt.Doublons.DejaParticipe(ctx, emp)

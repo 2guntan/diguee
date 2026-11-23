@@ -1,0 +1,15 @@
+{{define "titre"}}{{t "sans_js.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <p class="kicker">{{t "parcours.etape.verification"}}</p>
+    <h1 class="display">{{t "sans_js.titre"}}</h1>
+    <p>{{t "sans_js.pourquoi"}}</p>
+    <p>{{t "sans_js.activer"}}</p>
+    <p><a class="btn secondaire" href="/verifier">{{t "sans_js.reessayer"}}</a></p>
+    <h2>{{t "sans_js.sms.titre"}}</h2>
+    <p>{{t "sans_js.sms.texte"}}</p>
+    <p><a class="btn" href="/verifier/sms">{{t "sans_js.sms.lien"}}</a></p>
+  </div>
+</section>
+{{end}}

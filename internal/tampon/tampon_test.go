@@ -287,3 +287,36 @@ func TestDelaiReel(t *testing.T) {
 		t.Fatalf("%d lots écrits après le délai", len(b.lots))
 	}
 }
+
+type surveillanceFactice struct {
+	comptes map[string]int
+}
+
+func (s *surveillanceFactice) Compter(dimension, valeur string) { s.comptes[dimension+"="+valeur]++ }
+
+func TestRegionsCompteesALEcritureDuLot(t *testing.T) {
+	ctx := context.Background()
+	b := &baseFactice{}
+	m := &minuterieManuelle{}
+	s := &surveillanceFactice{comptes: map[string]int{}}
+	tp := Nouveau(Options{Ecrivain: b, Taille: 3, Delai: time.Hour, Minuterie: m.lancer, Surveillance: s,
+		Journal: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	for i := range 2 {
+		r := rep(i)
+		r.Region = int16(4 + i%2)
+		if err := tp.Ajouter(ctx, emp(i), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(s.comptes) != 0 {
+		t.Fatal("rien n'est compté à l'envoi d'une réponse")
+	}
+	r := rep(2)
+	r.Region = 4
+	if err := tp.Ajouter(ctx, emp(2), r); err != nil {
+		t.Fatal(err)
+	}
+	if s.comptes["region=4"] != 2 || s.comptes["region=5"] != 1 || len(s.comptes) != 2 {
+		t.Errorf("comptes : %v", s.comptes)
+	}
+}

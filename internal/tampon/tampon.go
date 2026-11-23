@@ -21,6 +21,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/big"
+	"strconv"
 	"sync"
 	"time"
 
@@ -54,7 +55,21 @@ type Options struct {
 	Journal    *slog.Logger
 	// DelaiEcriture borne la durée d'une écriture déclenchée par la minuterie.
 	DelaiEcriture time.Duration
+	// Surveillance reçoit, après l'écriture de chaque lot, le code de région
+	// de chaque réponse du lot (antifraude.Surveillance, spec §7). Compter au
+	// moment du lot, et non de l'envoi, ne crée aucun lien entre une réponse
+	// et le moment où elle a été donnée. Facultative.
+	Surveillance Surveillance
 }
+
+// Surveillance reçoit les métriques agrégées (antifraude.Surveillance).
+type Surveillance interface {
+	Compter(dimension, valeur string)
+}
+
+// DimensionRegion est la dimension des métriques par région
+// (antifraude.DimensionRegion).
+const DimensionRegion = "region"
 
 // Tampon est sûr pour un usage concurrent.
 type Tampon struct {
@@ -198,6 +213,11 @@ func (t *Tampon) vider(ctx context.Context) error {
 	}
 	if err := t.opt.Ecrivain.EcrireLot(ctx, t.opt.Maintenant().UTC(), es, rs); err != nil {
 		return err
+	}
+	if t.opt.Surveillance != nil {
+		for _, r := range rs {
+			t.opt.Surveillance.Compter(DimensionRegion, strconv.Itoa(int(r.Region)))
+		}
 	}
 	clear(t.empreintes)
 	clear(t.reponses)

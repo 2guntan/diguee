@@ -72,6 +72,11 @@ type Config struct {
 	// « fake » dans le registre des intégrations, donc refusée en production.
 	CleTOTP []byte // DIGUEE_CLE_TOTP : 64 chiffres hexadécimaux
 
+	// CleAltcha signe les défis du captcha ALTCHA (HMAC-SHA-256). Secret, 32
+	// octets. Vide : clé de développement écrite dans le code, déclarée
+	// « fake » dans le registre des intégrations, donc refusée en production.
+	CleAltcha []byte // DIGUEE_CLE_ALTCHA : 64 chiffres hexadécimaux
+
 	// Responsable du traitement (ADR 0005) et contacts.
 	StructureNom     Texte // DIGUEE_STRUCTURE_NOM
 	StructureAdresse Texte // DIGUEE_STRUCTURE_ADRESSE
@@ -181,6 +186,7 @@ func Charger(getenv func(string) string) (*Config, error) {
 		}
 	}
 	c.CleTOTP = l.cle("DIGUEE_CLE_TOTP", 32)
+	c.CleAltcha = l.cle("DIGUEE_CLE_ALTCHA", 32)
 
 	c.WhatsApp = l.choix("DIGUEE_WHATSAPP", "fake", "fake", "meta")
 	if c.WhatsApp == "meta" {

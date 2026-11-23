@@ -25,6 +25,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/2guntan/diguee/internal/altcha"
+	"github.com/2guntan/diguee/internal/antifraude"
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/config"
 	"github.com/2guntan/diguee/internal/empreinte"
@@ -89,6 +91,10 @@ func lancer(args []string, journal *slog.Logger) error {
 		return err
 	}
 	integrationWhatsApp, err := whatsapp.Construire(cfg, registre)
+	if err != nil {
+		return err
+	}
+	captcha, err := altcha.Construire(cfg, registre)
 	if err != nil {
 		return err
 	}
@@ -171,14 +177,21 @@ func lancer(args []string, journal *slog.Logger) error {
 	}
 	// Tampon mélangé (ADR 0003) : écrit à TAMPON_TAILLE envois, au plus tard
 	// TAMPON_DELAI après le premier, et à l'arrêt propre ci-dessous.
+	// Anti-fraude (spec §7) : métriques agrégées par préfixe et par région,
+	// avec alerte de pic ; limite par empreinte, partagée par tous les
+	// parcours de vérification (WhatsApp inversé, puis codes WhatsApp et SMS).
+	surveillance := antifraude.NouvelleSurveillance(nil, journal)
+	limiteEmpreinte := antifraude.NouvelleLimiteEmpreinte(cfg.VerifParEmpreinte24h, nil)
 	tp := tampon.Nouveau(tampon.Options{
 		Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
+		Surveillance: surveillance,
 	})
 	sessions := session.NouveauMagasin()
 	// Vérification inversée par WhatsApp (ADR 0009) : jetons en mémoire,
-	// webhook de Meta. Ticket #8 : Limiteur (vérifications par empreinte).
+	// webhook de Meta.
 	verificateur, err := whatsapp.NouveauVerificateur(whatsapp.OptionsVerificateur{
 		Empreinteur: empreinteur, Doublons: tp, Sessions: sessions,
+		Limiteur: limiteEmpreinte, Surveillance: surveillance,
 		Prefixes: cfg.PrefixesAutorises, Duree: cfg.JetonDuree, Journal: journal,
 	})
 	if err != nil {
@@ -189,6 +202,9 @@ func lancer(args []string, journal *slog.Logger) error {
 		Version: version.Version(), SHA256: sha, Journal: journal,
 		Empreinteur: empreinteur, Tampon: tp, Sessions: sessions, Questionnaire: q,
 		Equipe: espaceEquipe, WhatsApp: integrationWhatsApp, Verificateur: verificateur,
+		// Captcha ALTCHA ; la limite par adresse (DIGUEE_IP_PAR_HEURE) est
+		// construite par le serveur web.
+		Altcha: captcha,
 	})
 	if err != nil {
 		return err

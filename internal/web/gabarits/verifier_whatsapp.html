@@ -24,9 +24,7 @@
     </form>
     <p class="note">{{t "verif.whatsapp.silence"}}</p>
     {{- end}}
-    <form class="formulaire" method="post" action="/verifier">
-      <button class="btn{{if .Jeton}} secondaire{{end}}" type="submit">{{t "verif.whatsapp.nouveau"}}</button>
-    </form>
+    <p><a class="btn{{if .Jeton}} secondaire{{end}}" href="/verifier">{{t "verif.whatsapp.nouveau"}}</a></p>
     {{- if .Simulation}}
     <p class="alerte"><a href="/dev/whatsapp">{{t "verif.whatsapp.simulation"}}</a></p>
     {{- end}}

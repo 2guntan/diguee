@@ -123,6 +123,22 @@ func TestCleTOTP(t *testing.T) {
 	}
 }
 
+func TestCleAltcha(t *testing.T) {
+	c, err := Charger(env(minimal()))
+	if err != nil || c.CleAltcha != nil || c.AltchaDifficulte != 100000 {
+		t.Fatalf("sans DIGUEE_CLE_ALTCHA, la clé doit être absente : %v", err)
+	}
+	m := minimal()
+	m["DIGUEE_CLE_ALTCHA"] = strings.Repeat("0b", 32)
+	if c, err = Charger(env(m)); err != nil || len(c.CleAltcha) != 32 || c.CleAltcha[0] != 0x0b {
+		t.Fatalf("clé valide refusée : %v", err)
+	}
+	m["DIGUEE_CLE_ALTCHA"] = strings.Repeat("secret", 11)
+	if _, err := Charger(env(m)); err == nil || !strings.Contains(err.Error(), "DIGUEE_CLE_ALTCHA") || strings.Contains(err.Error(), "secret") {
+		t.Errorf("erreur attendue, sans la valeur : %v", err)
+	}
+}
+
 func TestWhatsApp(t *testing.T) {
 	c, err := Charger(env(minimal()))
 	if err != nil || c.WhatsApp != "fake" || c.JetonDuree != 10*time.Minute {

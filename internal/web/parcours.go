@@ -61,10 +61,12 @@ type Cache struct {
 }
 
 // parcoursActif indique si le parcours de réponse est servi : il faut la
-// vérification inversée, un empreinteur, un tampon et des sessions.
+// vérification inversée, un empreinteur, un tampon, des sessions et le
+// captcha.
 func (s *Serveur) parcoursActif() bool {
 	o := s.opt
-	return o.WhatsApp != nil && o.Verificateur != nil && o.Empreinteur != nil && o.Tampon != nil && o.Sessions != nil
+	return o.WhatsApp != nil && o.Verificateur != nil && o.Empreinteur != nil && o.Tampon != nil && o.Sessions != nil &&
+		o.Altcha != nil
 }
 
 // ouvert enveloppe les pages du parcours : hors de la période d'ouverture,

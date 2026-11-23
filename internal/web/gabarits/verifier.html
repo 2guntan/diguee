@@ -4,11 +4,20 @@
   <div class="wrap texte">
     <p class="kicker">{{t "parcours.etape.verification"}}</p>
     <h1 class="display">{{t "verif.titre"}}</h1>
+    {{- if .Erreur}}
+    <p class="erreur" role="alert">{{t .Erreur}}</p>
+    {{- end}}
     <p>{{t "verif.chapeau"}}</p>
     <p>{{t "verif.principe"}}</p>
-    <form class="formulaire" method="post" action="/verifier">
+    <form class="formulaire" method="post" action="/verifier"
+      {{- with .Defi}} data-altcha-algorithme="{{.Algorithm}}" data-altcha-defi="{{.Challenge}}" data-altcha-max="{{.MaxNumber}}" data-altcha-sel="{{.Salt}}" data-altcha-signature="{{.Signature}}"{{end}}
+      data-altcha-calcul="{{t "verif.captcha.calcul"}}" data-altcha-pret="{{t "verif.captcha.pret"}}" data-altcha-impossible="{{t "verif.captcha.impossible"}}">
+      <input type="hidden" name="altcha" value="">
       <button class="btn" type="submit">{{t "verif.bouton"}}</button>
+      <p class="aide" id="altcha-etat" aria-live="polite"></p>
     </form>
+    <noscript><p class="alerte">{{t "verif.captcha.sans_js"}} <a href="/verifier/sans-javascript">{{t "verif.captcha.sans_js.lien"}}</a></p></noscript>
+    <p class="note">{{t "verif.captcha.explication"}}</p>
     <p class="note">{{t "verif.oubli"}}</p>
     <p class="note">{{t "verif.meta"}}</p>
   </div>
