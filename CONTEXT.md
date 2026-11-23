@@ -52,6 +52,34 @@ _Avoid_ : quorum
 Le recalcul des résultats, une fois par jour à heure fixe, sur les réponses écrites jusqu'à la veille, consigné dans le journal public.
 _Avoid_ : résultats en direct, temps réel
 
+### Observatoire
+
+**Engagement** :
+Une promesse publique d'un élu, citée mot pour mot, avec sa source datée et son échéance.
+_Avoid_ : promesse (dans les données), mesure
+
+**Source** :
+Le document d'origine d'un engagement ou d'une preuve, avec son lien et la copie archivée par Diguee.
+_Avoid_ : lien, référence
+
+**Statut** :
+L'état d'un engagement à une date donnée : tenu, partiel, non tenu ou en cours, toujours accompagné de ses preuves.
+_Avoid_ : note, verdict
+
+**Rédacteur** :
+Le membre de l'équipe qui saisit un engagement ou propose un nouveau statut.
+
+**Relecteur** :
+Le membre de l'équipe, distinct du rédacteur, qui valide la saisie avant sa publication.
+_Avoid_ : modérateur, validateur
+
+**Préavis** :
+Le délai de 15 jours laissé à l'élu, après envoi du dossier, avant la publication d'un statut « non tenu » ou « partiel ».
+
+**Droit de réponse** :
+Le texte de l'élu concerné, reçu par un canal vérifiable et publié tel quel sous l'engagement.
+_Avoid_ : commentaire, réaction
+
 ### Cadre
 
 **Responsable du traitement** :
@@ -65,6 +93,10 @@ _Avoid_ : propriétaire, éditeur
 - Une **Réponse** contient un **Profil** et 3 **Thèmes** au plus.
 - Un numéro vérifié produit au plus une **Participation**, repérée par son **Empreinte**.
 - À la **Clôture**, les **Participations** et leurs **Empreintes** sont détruites ; seules les **Réponses** restent.
+
+- Un **Engagement** a une ou plusieurs **Sources** et une suite de **Statuts**, jamais modifiés, seulement ajoutés.
+- Chaque **Statut** est saisi par un **Rédacteur** et validé par un **Relecteur** distinct.
+- Un **Statut** « non tenu » ou « partiel » n'est publié qu'après un **Préavis**. Il est accompagné, le cas échéant, du **Droit de réponse**.
 
 ## Example dialogue
 
