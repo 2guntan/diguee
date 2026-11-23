@@ -1,0 +1,42 @@
+{{define "titre"}}{{t "questionnaire.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <p class="kicker">{{t "parcours.etape.questionnaire"}}</p>
+    <h1 class="display">{{t "questionnaire.titre"}}</h1>
+    <p class="lead">{{t "questionnaire.chapeau"}}</p>
+    {{- if .Erreurs}}
+    <p class="erreur" role="alert">{{t "questionnaire.erreurs"}}</p>
+    {{- end}}
+    <form class="formulaire" method="post" action="/questionnaire/recapitulatif">
+      {{- range .Questions}}{{template "question" .}}{{end}}
+      <h2>{{t "profil.titre"}}</h2>
+      <p>{{t "profil.chapeau"}}</p>
+      {{- range .Profil}}{{template "question" .}}{{end}}
+      <div class="champ{{if .MajeurErreur}} en-erreur{{end}}" id="majeur">
+        {{- if .MajeurErreur}}
+        <p class="erreur">{{t .MajeurErreur}}</p>
+        {{- end}}
+        <label class="choix"><input type="checkbox" name="majeur" value="1" required{{if .MajeurCoche}} checked{{end}}> <strong>{{t .CleMajeur}}</strong></label>
+      </div>
+      <button class="btn" type="submit">{{t "questionnaire.bouton"}}</button>
+    </form>
+  </div>
+</section>
+{{end}}
+
+{{define "question"}}
+<fieldset class="champ{{if .Erreur}} en-erreur{{end}}" id="{{.Nom}}">
+  <legend>{{if .Numero}}<span class="num">{{.Numero}}</span> {{end}}{{t .Cle}}</legend>
+  {{- if .Aide}}
+  <p class="aide">{{t .Aide}}</p>
+  {{- end}}
+  {{- if .Erreur}}
+  <p class="erreur">{{t .Erreur}}</p>
+  {{- end}}
+  {{- $q := .}}
+  {{- range .Choix}}
+  <label class="choix" for="{{.ID}}"><input id="{{.ID}}" type="{{$q.Saisie}}" name="{{$q.Nom}}" value="{{.Code}}"{{if .Coche}} checked{{end}}{{if $q.Requis}} required{{end}}> {{t .Cle}}</label>
+  {{- end}}
+</fieldset>
+{{end}}

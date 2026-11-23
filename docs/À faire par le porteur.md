@@ -12,7 +12,7 @@ Chaque section indique : ce qui tourne en attendant, ce qu'il faut faire, et le 
 
 ### 1.1 OVHcloud : KMS pour l'empreinte (tickets #5, #7, #15)
 
-- **En attendant** : `DIGUEE_EMPREINTEUR=fake`, un HMAC calculé avec une clé de développement. Ce mode est interdit en production.
+- **En attendant** (en place depuis le ticket #2) : `DIGUEE_EMPREINTEUR=fake` (valeur par défaut), un HMAC-SHA-256 calculé avec une clé de développement écrite dans le code (`internal/empreinte`, type `HMACLocal`). Il est déclaré `fake` dans le registre des intégrations : le serveur refuse donc de démarrer en production. La vérification du numéro est elle aussi factice : en développement seulement, la page `/verifier` accepte tout numéro +221 valide sans rien envoyer (les vrais parcours arrivent aux tickets #6, #9 et #10).
 - **À faire** :
   1. Créer le compte OVHcloud **réservé à Diguee**, avec la double authentification.
   2. Commander un KMS en région France, puis créer une clé RSA non exportable, utilisable pour signer avec l'algorithme **RS256**.
@@ -67,13 +67,16 @@ Ces valeurs sont « À COMPLÉTER » dans la configuration. Elles s'affichent co
 | Numéro CDP | `DIGUEE_NUMERO_CDP` | Politique de confidentialité, pied de page | #1 |
 | Adresse de contact (droits d'accès et d'opposition) | `DIGUEE_CONTACT` | Politique de confidentialité | #1 |
 | Date d'ouverture (la clôture tombe 6 mois plus tard) | `DIGUEE_OUVERTURE` (format `AAAA-MM-JJ` ; `DIGUEE_CLOTURE` est calculée, mais peut être fixée) | Accueil, méthodologie, clôture | #1, #16 |
-| Échelles de réponse de Q1 et Q2 (des propositions figurent dans la spec §3) | catalogue `fr` (ticket #2) | Questionnaire | #2 |
-| Choix de réponse de Q5 (« qui devrait évaluer ») | catalogue `fr` (ticket #2) | Questionnaire | #2 |
+| Échelles de réponse de Q1 et Q2. **Provisoire** : les propositions de la spec §3, Q1 « Toujours / Souvent / Rarement / Jamais / Je ne sais pas », Q2 « Oui, toujours / Oui, pour les engagements graves / Non / Je ne sais pas » | libellés : clés `questionnaire.q1.choix.*` et `questionnaire.q2.choix.*` de `internal/i18n/catalogues/fr.json` ; nombre de choix et marque `Provisoire` : `internal/questionnaire/v1.go` | Questionnaire, récapitulatif | #2 |
+| Choix de réponse de Q5 (« qui devrait évaluer »). **Provisoire**, proposé par le développement : « Une autorité indépendante / Le Conseil constitutionnel / L'Assemblée nationale / Un panel de citoyens tirés au sort / Je ne sais pas » | clés `questionnaire.q5.choix.*` du catalogue `fr` ; nombre de choix et marque `Provisoire` : `internal/questionnaire/v1.go` | Questionnaire, récapitulatif | #2 |
+| Choix du critère « sexe » du profil (la spec ne les fixe pas) : « Femme / Homme / Je préfère ne pas répondre », à confirmer | clés `profil.sexe.choix.*` du catalogue `fr` | Questionnaire | #2 |
 | Numéro WhatsApp de Diguee | `DIGUEE_NUMERO_WHATSAPP` | Vérification inversée (lien `wa.me`) | #1, #6 |
 | Liste définitive des préfixes mobiles (ARTP) | `DIGUEE_PREFIXES_AUTORISES` (défaut provisoire `70,75,76,77,78`) | Vérification | #6 |
 | Traductions en wolof et en pulaar | `internal/i18n/catalogues/wo.json` et `ff.json` ; une langue n'est proposée qu'une fois son catalogue complet | Catalogues `wo` et `ff` | #1 |
 | Composition de la population (ANSD) par région, âge et sexe | à définir (ticket #11) | Page des résultats | #11 |
 | Premiers élus et engagements de l'observatoire | espace équipe (ticket #13) | Observatoire | #13 |
+
+**Questionnaire** : tant que Q1, Q2 ou Q5 sont marquées `Provisoire` dans `internal/questionnaire/v1.go`, le serveur refuse de démarrer en production (`diguee verifier-config` les liste). Une fois les choix validés : ajuster les libellés du catalogue, le nombre de choix dans `v1.go` si besoin, puis retirer la marque. Les codes d'une version publiée ne doivent plus changer ensuite (spec §3.2 : une nouvelle version ne peut être publiée qu'avant l'ouverture).
 
 Valeurs qui ont un défaut tiré de la spec, à confirmer si besoin : `DIGUEE_ALTCHA_DIFFICULTE` (100000, provisoire jusqu'au ticket #8) et les seuils du §13 (`DIGUEE_SEUIL_PUBLICATION`, `DIGUEE_SEUIL_CASE`, etc.).
 
@@ -96,3 +99,4 @@ Mis à jour à la fin de chaque ticket : ce qui est fait, et les éventuelles va
 | Ticket | État | Notes |
 |---|---|---|
 | #1 | fait | Squelette Go : accueil (question clé, compteur lu en base), Méthodologie et Politique de confidentialité avec la configuration réelle, catalogues `fr` (livré), `wo` et `ff` (prévus), migrations, garde de production et registre des intégrations, build reproductible (version et SHA-256 au pied de page), CI GitHub Actions. Valeurs provisoires ajoutées : `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE`, `DIGUEE_CONTACT`, `DIGUEE_NUMERO_CDP`, `DIGUEE_NUMERO_WHATSAPP`, `DIGUEE_OUVERTURE` ; défaut provisoire `DIGUEE_ALTCHA_DIFFICULTE`. Aucune fausse implémentation pour l'instant. |
+| #2 | fait | Parcours de réponse de bout en bout, sans JavaScript : accueil (bouton « Répondre à la consultation » pendant l'ouverture), vérification factice (développement seulement), questionnaire v1 (Q1 à Q8, profil, « 18 ans ou plus » obligatoire), récapitulatif « définitive », envoi, merci. Tampon mélangé en mémoire (`DIGUEE_TAMPON_TAILLE`, `DIGUEE_TAMPON_DELAI`, écriture à l'arrêt), deux tables sans lien, identifiants aléatoires, jour seulement, doublon refusé en base et dans le tampon. Sessions en mémoire. Fausse implémentation ajoutée : `DIGUEE_EMPREINTEUR=fake` (remplacée par `ovh` au ticket #5). Valeurs provisoires ajoutées : échelles de Q1 et Q2, choix de Q5 (marque `Provisoire`, bloquante en production), choix du critère « sexe » à confirmer. |

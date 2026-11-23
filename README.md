@@ -15,9 +15,13 @@ Site : https://diguee.sn · Contact : @digueeboorla
 | `internal/config` | Lecture des variables d'environnement `DIGUEE_*`, valeurs « À COMPLÉTER » |
 | `internal/integration` | Registre où chaque service externe déclare son mode (`fake` ou réel) |
 | `internal/garde` | Refus de démarrer en production s'il reste une valeur provisoire ou une fausse implémentation |
+| `internal/empreinte` | Normalisation des numéros +221 et interface `Empreinteur` (implémentation de développement `fake` : HMAC à clé locale) |
+| `internal/questionnaire` | Questionnaire versionné (Q1 à Q8, profil, « 18 ans ou plus ») : codes stockés et clés du catalogue |
+| `internal/tampon` | Tampon mélangé (ADR 0003) : écriture groupée à 20 envois, à 30 minutes et à l'arrêt, doublons refusés |
+| `internal/session` | Sessions en mémoire seulement, cookie `HttpOnly`, `Secure`, `SameSite=Strict` |
 | `internal/base` | PostgreSQL : connexion, migrations (`migrations/NNNN_nom.sql`), requêtes ; `basetest` pour les tests |
 | `internal/i18n` | Catalogues de textes : `fr` livré, `wo` et `ff` prévus |
-| `internal/web` | Pages `html/template` sans JavaScript, feuille de style et polices auto-hébergées |
+| `internal/web` | Pages `html/template` sans JavaScript (accueil, parcours de réponse, méthodologie, confidentialité), feuille de style et polices auto-hébergées |
 | `internal/version` | Version et SHA-256 de l'exécutable, affichés au pied de page |
 | `docs/` | Spécification, ADR, et [ce que le porteur doit fournir](docs/À%20faire%20par%20le%20porteur.md) |
 
@@ -33,7 +37,12 @@ createdb diguee
 export DIGUEE_POSTGRES_URL='postgres://localhost/diguee?sslmode=disable'
 make lancer
 
-# Tests (ceux qui demandent PostgreSQL sont sautés sans DIGUEE_TEST_POSTGRES_URL)
+# Pour essayer le parcours de réponse en local, la consultation doit être ouverte :
+# DIGUEE_OUVERTURE=2026-11-01 make lancer. La vérification du numéro est alors
+# factice (aucun message envoyé) ; elle n'existe pas en production.
+
+# Tests (ceux qui demandent PostgreSQL sont sautés sans DIGUEE_TEST_POSTGRES_URL ;
+# le test T1/T2 lance pg_dump, version 16, cherché dans le PATH ou dans DIGUEE_TEST_PG_DUMP)
 export DIGUEE_TEST_POSTGRES_URL='postgres://localhost/diguee_test?sslmode=disable'
 go vet ./... && go test ./...
 
@@ -41,7 +50,7 @@ go vet ./... && go test ./...
 make verifier-build
 ```
 
-Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
+Chaque test de base travaille dans un schéma temporaire, supprimé à la fin. Les tests du parcours (`internal/web/parcours_test.go`) font 200 envois complets sans JavaScript, puis vérifient sur un `pg_dump` qu'il n'y a ni numéro, ni IP, ni heure (T1), et que l'ordre du dump ne permet pas d'apparier participations et réponses mieux que le hasard (T2). L'écriture du tampon à l'arrêt est testée par un vrai SIGTERM (`cmd/diguee/main_test.go`). En intégration continue (`CI` non vide), l'absence de base fait échouer les tests au lieu de les sauter. La CI (`.github/workflows/ci.yml`) lance `gofmt`, `go vet`, `go test ./...` avec un service `postgres:16`, puis vérifie le build reproductible.
 
 Autres commandes : `diguee migrer` (migrations seules), `diguee verifier-config` (liste ce qui manque pour la production), `diguee version`.
 
@@ -56,6 +65,7 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_ENV` | `development` (ou `production`) | |
 | `DIGUEE_ADRESSE` | `:8080` | |
 | `DIGUEE_POSTGRES_URL` | obligatoire, secret | |
+| `DIGUEE_EMPREINTEUR` | `fake` (HMAC de développement, interdit en production) ; `ovh` au ticket #5 | |
 | `DIGUEE_STRUCTURE_NOM`, `DIGUEE_STRUCTURE_ADRESSE` | À COMPLÉTER | (ADR 0005) |
 | `DIGUEE_CONTACT` | À COMPLÉTER | |
 | `DIGUEE_NUMERO_CDP` | À COMPLÉTER | `NUMERO_CDP` |
@@ -78,7 +88,7 @@ Les secrets (URL de la base avec son mot de passe, puis les accès Meta, SMS, KM
 | `DIGUEE_PREAVIS_JOURS` | `15` | `PREAVIS_JOURS` |
 | `DIGUEE_TEST_POSTGRES_URL` | tests seulement | |
 
-Avec `DIGUEE_ENV=production`, le serveur refuse de démarrer si une valeur vaut « À COMPLÉTER » ou si une intégration déclarée dans `internal/integration` est en mode `fake`, et affiche la liste de ce qui manque.
+Avec `DIGUEE_ENV=production`, le serveur refuse de démarrer si une valeur vaut « À COMPLÉTER », si une intégration déclarée dans `internal/integration` est en mode `fake`, ou si le questionnaire contient encore des choix provisoires (`Provisoire` dans `internal/questionnaire/v1.go`), et affiche la liste de ce qui manque.
 
 ### Règles
 

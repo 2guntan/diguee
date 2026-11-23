@@ -1,0 +1,24 @@
+{{define "titre"}}{{t "recap.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <p class="kicker">{{t "parcours.etape.recapitulatif"}}</p>
+    <h1 class="display">{{t "recap.titre"}}</h1>
+    <p class="mention"><strong>{{t "recap.avertissement"}}</strong></p>
+    <dl class="params recap">
+      {{- range .Questions}}{{template "ligne" .}}{{end}}
+      {{- range .Profil}}{{template "ligne" .}}{{end}}
+      <div><dt>{{t .CleMajeur}}</dt><dd>{{t "recap.oui"}}</dd></div>
+    </dl>
+    <form class="formulaire actions" method="post" action="/envoyer">
+      {{- range .Caches}}
+      <input type="hidden" name="{{.Nom}}" value="{{.Valeur}}">
+      {{- end}}
+      <button class="btn" type="submit">{{t "recap.confirmer"}}</button>
+      <button class="btn secondaire" type="submit" formaction="/questionnaire">{{t "recap.modifier"}}</button>
+    </form>
+  </div>
+</section>
+{{end}}
+
+{{define "ligne"}}<div><dt>{{if .Numero}}<span class="num">{{.Numero}}</span> {{end}}{{t .Cle}}</dt><dd>{{range $i, $c := .Coches}}{{if $i}}{{t "format.liste.separateur"}}{{end}}{{t $c.Cle}}{{end}}</dd></div>{{end}}

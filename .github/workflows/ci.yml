@@ -39,6 +39,8 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: go vet
         run: go vet ./...
+      - name: pg_dump (test T1/T2)
+        run: pg_dump --version
       - name: go test
         run: go test ./...
       - name: Build reproductible

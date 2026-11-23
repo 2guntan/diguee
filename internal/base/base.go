@@ -4,15 +4,21 @@ package base
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
 	"fmt"
 	"io/fs"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/2guntan/diguee/internal/empreinte"
+	"github.com/2guntan/diguee/internal/questionnaire"
 )
 
 //go:embed migrations/*.sql
@@ -136,6 +142,60 @@ func (b *Base) CompterReponses(ctx context.Context) (int64, error) {
 	var n int64
 	err := b.Pool.QueryRow(ctx, "SELECT count(*) FROM reponse").Scan(&n)
 	return n, err
+}
+
+// ParticipationExiste indique si l'empreinte est déjà dans la table des
+// participations.
+func (b *Base) ParticipationExiste(ctx context.Context, e empreinte.Empreinte) (bool, error) {
+	var existe bool
+	err := b.Pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM participation WHERE empreinte = $1)", e[:]).Scan(&existe)
+	return existe, err
+}
+
+// EcrireLot écrit un lot du tampon en une seule transaction (spec §6.2) : les
+// participations puis les réponses, chacune dans l'ordre reçu (le tampon les a
+// déjà mélangées). Chaque réponse reçoit un identifiant aléatoire (UUID v4) et
+// seulement le jour d'écriture, jamais l'heure.
+func (b *Base) EcrireLot(ctx context.Context, jour time.Time, empreintes []empreinte.Empreinte, reponses []questionnaire.Reponse) error {
+	j := pgtype.Date{Time: time.Date(jour.Year(), jour.Month(), jour.Day(), 0, 0, 0, 0, time.UTC), Valid: true}
+	return pgx.BeginFunc(ctx, b.Pool, func(tx pgx.Tx) error {
+		lot := &pgx.Batch{}
+		for _, e := range empreintes {
+			lot.Queue("INSERT INTO participation (empreinte) VALUES ($1)", e[:])
+		}
+		for _, r := range reponses {
+			id, err := uuidAleatoire()
+			if err != nil {
+				return err
+			}
+			lot.Queue(`INSERT INTO reponse (id, jour, version_questionnaire,
+				q1, q2, q3, q4, q5, q6, q7, themes, region, tranche_age, sexe, inscrit)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+				id, j, r.Version, r.Q1, r.Q2, r.Q3, r.Q4, r.Q5, r.Q6,
+				nonNul(r.Q7), nonNul(r.Themes), r.Region, r.TrancheAge, r.Sexe, r.Inscrit)
+		}
+		return tx.SendBatch(ctx, lot).Close()
+	})
+}
+
+// nonNul remplace un tableau nil par un tableau vide (« Je ne sais pas »).
+func nonNul(xs []int16) []int16 {
+	if xs == nil {
+		return []int16{}
+	}
+	return xs
+}
+
+// uuidAleatoire tire un UUID version 4 avec le générateur cryptographique.
+func uuidAleatoire() (pgtype.UUID, error) {
+	var u pgtype.UUID
+	if _, err := rand.Read(u.Bytes[:]); err != nil {
+		return u, err
+	}
+	u.Bytes[6] = u.Bytes[6]&0x0f | 0x40
+	u.Bytes[8] = u.Bytes[8]&0x3f | 0x80
+	u.Valid = true
+	return u, nil
 }
 
 // Ping vérifie que la base répond.

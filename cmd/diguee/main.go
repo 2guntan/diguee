@@ -21,9 +21,13 @@ import (
 
 	"github.com/2guntan/diguee/internal/base"
 	"github.com/2guntan/diguee/internal/config"
+	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/garde"
 	"github.com/2guntan/diguee/internal/i18n"
 	"github.com/2guntan/diguee/internal/integration"
+	"github.com/2guntan/diguee/internal/questionnaire"
+	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/tampon"
 	"github.com/2guntan/diguee/internal/version"
 	"github.com/2guntan/diguee/internal/web"
 )
@@ -56,13 +60,18 @@ func lancer(args []string, journal *slog.Logger) error {
 		return fmt.Errorf("configuration invalide :\n%w", err)
 	}
 
-	// Chaque intégration externe (KMS, WhatsApp, SMS, stockage, ancrage) sera
-	// construite ici d'après la configuration et déclarera son mode dans le
+	// Chaque intégration externe (KMS, WhatsApp, SMS, stockage, ancrage) est
+	// construite ici d'après la configuration et déclare son mode dans le
 	// registre, avant le passage de la garde.
 	registre := &integration.Registre{}
+	empreinteur, err := empreinte.Construire(cfg, registre)
+	if err != nil {
+		return err
+	}
+	q := questionnaire.Courant()
 
 	if commande == "verifier-config" {
-		manques := garde.Manques(cfg, registre)
+		manques := garde.Manques(cfg, registre, q)
 		for _, m := range manques {
 			fmt.Println("- " + m)
 		}
@@ -73,15 +82,19 @@ func lancer(args []string, journal *slog.Logger) error {
 		return nil
 	}
 
-	if err := garde.Verifier(cfg, registre); err != nil {
+	if err := garde.Verifier(cfg, registre, q); err != nil {
 		return err
 	}
-	for _, m := range garde.Manques(cfg, registre) {
+	for _, m := range garde.Manques(cfg, registre, q) {
 		journal.Warn("provisoire (interdit en production)", "manque", m)
 	}
 
 	ctx, arreter := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer arreter()
+
+	if err := empreinte.VerifierDeterminisme(ctx, empreinteur); err != nil {
+		return err
+	}
 
 	b, err := base.Ouvrir(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -108,9 +121,18 @@ func lancer(args []string, journal *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Tampon mélangé (ADR 0003) : écrit à TAMPON_TAILLE envois, au plus tard
+	// TAMPON_DELAI après le premier, et à l'arrêt propre ci-dessous.
+	tp := tampon.Nouveau(tampon.Options{
+		Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal,
+	})
 	srv, err := web.Nouveau(web.Options{
 		Config: cfg, Catalogues: catalogues, Compteur: b,
 		Version: version.Version(), SHA256: sha, Journal: journal,
+		Empreinteur: empreinteur, Tampon: tp, Sessions: session.NouveauMagasin(), Questionnaire: q,
+		// Seule la vérification factice existe pour l'instant (tickets #5, #6,
+		// #9 et #10 pour les vraies) ; elle n'est jamais servie en production.
+		VerificationFactice: cfg.Env != config.Production,
 	})
 	if err != nil {
 		return err
@@ -132,16 +154,22 @@ func lancer(args []string, journal *slog.Logger) error {
 	journal.Info("serveur démarré", "adresse", cfg.Adresse, "env", cfg.Env,
 		"version", version.Version(), "sha256", sha)
 
+	var errServeur error
 	select {
-	case err := <-erreurs:
-		return err
+	case errServeur = <-erreurs:
 	case <-ctx.Done():
+		journal.Info("arrêt demandé")
 	}
-	journal.Info("arrêt demandé")
 	fin, annuler := context.WithTimeout(context.Background(), 20*time.Second)
 	defer annuler()
-	if err := serveur.Shutdown(fin); err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return err
+	if err := serveur.Shutdown(fin); err != nil && !errors.Is(err, context.DeadlineExceeded) && errServeur == nil {
+		errServeur = err
 	}
-	return nil
+	// Plus aucune requête en cours : le tampon est écrit, même incomplet.
+	attente := tp.Attente()
+	if err := tp.Fermer(fin); err != nil {
+		return errors.Join(errServeur, fmt.Errorf("écriture du tampon à l'arrêt (%d envois perdus) : %w", attente, err))
+	}
+	journal.Info("tampon écrit à l'arrêt", "envois", attente)
+	return errServeur
 }

@@ -18,7 +18,11 @@
       <span class="btn" aria-disabled="true">{{tf "accueil.bouton.ouvre_le" (jour .Config.Ouverture)}}</span>
       {{- end}}
       {{- else if eq .Phase "ouverte"}}
+      {{- if .Parcours}}
+      <a class="btn" href="/verifier">{{t "accueil.bouton.repondre"}}</a>
+      {{- else}}
       <span class="btn" aria-disabled="true">{{t "accueil.bouton.parcours_a_venir"}}</span>
+      {{- end}}
       {{- else}}
       <span class="btn" aria-disabled="true">{{t "accueil.bouton.close"}}</span>
       {{- end}}

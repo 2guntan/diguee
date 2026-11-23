@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -24,15 +25,36 @@ const Variable = "DIGUEE_TEST_POSTGRES_URL"
 // Ouvrir renvoie une base migrée dans un schéma propre au test.
 func Ouvrir(t testing.TB) *base.Base {
 	t.Helper()
-	b := OuvrirVide(t)
+	b, _ := OuvrirMigree(t)
+	return b
+}
+
+// OuvrirMigree renvoie une base migrée dans un schéma propre au test, et la
+// description de ce schéma (pour pg_dump, par exemple).
+func OuvrirMigree(t testing.TB) (*base.Base, Schema) {
+	t.Helper()
+	b, sc := OuvrirSchema(t)
 	if _, err := b.Migrer(context.Background()); err != nil {
 		t.Fatalf("migrations : %v", err)
 	}
-	return b
+	return b, sc
 }
 
 // OuvrirVide renvoie une base dans un schéma propre au test, sans migration.
 func OuvrirVide(t testing.TB) *base.Base {
+	t.Helper()
+	b, _ := OuvrirSchema(t)
+	return b
+}
+
+// Schema décrit le schéma temporaire d'un test.
+type Schema struct {
+	Nom string // nom du schéma
+	URL string // URL de la base de test, dont les connexions utilisent ce schéma
+}
+
+// NouveauSchema crée un schéma temporaire vide, supprimé à la fin du test.
+func NouveauSchema(t testing.TB) Schema {
 	t.Helper()
 	url := os.Getenv(Variable)
 	if url == "" {
@@ -64,15 +86,27 @@ func OuvrirVide(t testing.TB) *base.Base {
 		_, _ = c.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
 	})
 
-	cfg, err := pgxpool.ParseConfig(url)
+	// pgx transmet les paramètres inconnus de l'URL comme paramètres de session.
+	sep := "?"
+	if strings.Contains(url, "?") {
+		sep = "&"
+	}
+	return Schema{Nom: schema, URL: url + sep + "search_path=" + schema}
+}
+
+// OuvrirSchema renvoie une base dans un schéma propre au test, sans
+// migration, et la description de ce schéma.
+func OuvrirSchema(t testing.TB) (*base.Base, Schema) {
+	t.Helper()
+	sc := NouveauSchema(t)
+	cfg, err := pgxpool.ParseConfig(sc.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	b, err := base.OuvrirAvec(ctx, cfg)
+	b, err := base.OuvrirAvec(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(b.Fermer)
-	return b
+	return b, sc
 }

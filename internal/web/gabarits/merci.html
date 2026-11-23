@@ -1,0 +1,14 @@
+{{define "titre"}}{{t "merci.titre"}}{{end}}
+{{define "contenu"}}
+<section class="page">
+  <div class="wrap texte">
+    <h1 class="display">{{t "merci.titre"}}</h1>
+    <p class="lead">{{t "merci.texte"}}</p>
+    <p>{{t "merci.anonymat"}}</p>
+    <h2>{{t "merci.partage.titre"}}</h2>
+    <p>{{t "merci.partage.texte"}}</p>
+    <p><a class="btn" href="https://wa.me/?text={{t "merci.partage.message"}}" rel="noreferrer noopener">{{t "merci.partage.bouton"}}</a></p>
+    <p><a href="/">{{t "erreur.retour"}}</a></p>
+  </div>
+</section>
+{{end}}

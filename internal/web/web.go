@@ -17,7 +17,11 @@ import (
 	"time"
 
 	"github.com/2guntan/diguee/internal/config"
+	"github.com/2guntan/diguee/internal/empreinte"
 	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/questionnaire"
+	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/tampon"
 )
 
 //go:embed gabarits/*.html
@@ -27,7 +31,8 @@ var fichiersGabarits embed.FS
 var fichiersStatiques embed.FS
 
 // Pages servies, chacune avec son gabarit.
-var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible"}
+var pages = []string{"accueil", "methodologie", "confidentialite", "introuvable", "indisponible",
+	"verifier", "questionnaire", "recapitulatif", "merci", "deja_participe", "session_expiree"}
 
 // Politique de sécurité : aucun script, aucune ressource tierce.
 const csp = "default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; " +
@@ -47,6 +52,15 @@ type Options struct {
 	SHA256     string
 	Journal    *slog.Logger
 	Maintenant func() time.Time // time.Now par défaut
+
+	// Parcours de réponse : servi seulement si tous ces champs sont remplis.
+	Empreinteur   empreinte.Empreinteur
+	Tampon        *tampon.Tampon
+	Sessions      *session.Magasin
+	Questionnaire *questionnaire.Questionnaire // questionnaire.Courant() par défaut
+	// VerificationFactice active la page de vérification de développement, qui
+	// accepte un numéro sans rien envoyer. Jamais en production.
+	VerificationFactice bool
 }
 
 // Serveur sert les pages publiques.
@@ -63,6 +77,12 @@ func Nouveau(opt Options) (*Serveur, error) {
 	}
 	if opt.Journal == nil {
 		opt.Journal = slog.Default()
+	}
+	if opt.Questionnaire == nil {
+		opt.Questionnaire = questionnaire.Courant()
+	}
+	if opt.VerificationFactice && opt.Config.Env == config.Production {
+		return nil, fmt.Errorf("la vérification factice est interdite en production")
 	}
 	s := &Serveur{opt: opt, gabarits: map[string]*template.Template{}, mux: http.NewServeMux()}
 	for _, p := range pages {
@@ -85,6 +105,13 @@ func Nouveau(opt Options) (*Serveur, error) {
 	s.mux.HandleFunc("GET /methodologie", s.page("methodologie"))
 	s.mux.HandleFunc("GET /confidentialite", s.page("confidentialite"))
 	s.mux.HandleFunc("GET /sante", s.sante)
+	s.mux.HandleFunc("GET /verifier", s.ouvert(s.verifierPage))
+	s.mux.HandleFunc("POST /verifier", s.ouvert(s.verifierNumero))
+	s.mux.HandleFunc("GET /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
+	s.mux.HandleFunc("POST /questionnaire", s.ouvert(s.avecSession(s.questionnairePage)))
+	s.mux.HandleFunc("POST /questionnaire/recapitulatif", s.ouvert(s.avecSession(s.recapitulatif)))
+	s.mux.HandleFunc("POST /envoyer", s.ouvert(s.avecSession(s.envoyer)))
+	s.mux.HandleFunc("GET /merci", s.page("merci"))
 	s.mux.HandleFunc("/", s.introuvable)
 	return s, nil
 }
@@ -111,14 +138,26 @@ type Donnees struct {
 	Version  string
 	SHA256   string
 	Compteur int64
+	Parcours bool // le parcours de réponse est servi
+
+	// Pages du parcours.
+	Erreur       string // clé d'un message d'erreur
+	Erreurs      bool   // le questionnaire envoyé contient des erreurs
+	Questions    []VueQuestion
+	Profil       []VueQuestion
+	CleMajeur    string
+	MajeurCoche  bool
+	MajeurErreur string
+	Caches       []Cache // champs cachés du récapitulatif
 }
 
 func (s *Serveur) donnees() Donnees {
 	return Donnees{
-		Config:  s.opt.Config,
-		Phase:   s.opt.Config.Phase(s.opt.Maintenant()),
-		Version: s.opt.Version,
-		SHA256:  s.opt.SHA256,
+		Config:   s.opt.Config,
+		Phase:    s.opt.Config.Phase(s.opt.Maintenant()),
+		Version:  s.opt.Version,
+		SHA256:   s.opt.SHA256,
+		Parcours: s.parcoursActif(),
 	}
 }
 
@@ -135,7 +174,7 @@ func (s *Serveur) rendre(w http.ResponseWriter, r *http.Request, statut int, pag
 		err = g.Funcs(fonctions(s.langue(r))).ExecuteTemplate(&buf, "base", d)
 		if err == nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(statut)
 			_, _ = w.Write(buf.Bytes())
 			return

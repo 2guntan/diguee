@@ -1,0 +1,647 @@
+package web
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/2guntan/diguee/internal/base"
+	"github.com/2guntan/diguee/internal/base/basetest"
+	"github.com/2guntan/diguee/internal/config"
+	"github.com/2guntan/diguee/internal/empreinte"
+	"github.com/2guntan/diguee/internal/i18n"
+	"github.com/2guntan/diguee/internal/questionnaire"
+	"github.com/2guntan/diguee/internal/session"
+	"github.com/2guntan/diguee/internal/tampon"
+)
+
+// journalSur est un journal en mémoire, sûr pour un usage concurrent.
+type journalSur struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (j *journalSur) Write(p []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.buf.Write(p)
+}
+
+func (j *journalSur) String() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.buf.String()
+}
+
+// banc réunit un serveur avec le parcours complet, sa base et son tampon.
+type banc struct {
+	srv     *Serveur
+	base    *base.Base
+	schema  basetest.Schema
+	tampon  *tampon.Tampon
+	journal *journalSur
+}
+
+func nouveauBanc(t *testing.T, env map[string]string) *banc {
+	t.Helper()
+	b, sc := basetest.OuvrirMigree(t)
+	env["DIGUEE_POSTGRES_URL"] = "postgres://localhost/diguee"
+	if _, ok := env["DIGUEE_OUVERTURE"]; !ok {
+		env["DIGUEE_OUVERTURE"] = "2026-11-01"
+	}
+	cfg, err := config.Charger(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := i18n.Charger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := &journalSur{}
+	journal := slog.New(slog.NewJSONHandler(j, nil))
+	tp := tampon.Nouveau(tampon.Options{Ecrivain: b, Taille: cfg.TamponTaille, Delai: cfg.TamponDelai, Journal: journal})
+	s, err := Nouveau(Options{
+		Config: cfg, Catalogues: cs, Compteur: b,
+		Version: "v0.0.0-test", SHA256: strings.Repeat("ab", 32), Journal: journal,
+		Maintenant:  func() time.Time { return time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC) },
+		Empreinteur: empreinte.NouveauHMACLocal(nil), Tampon: tp, Sessions: session.NouveauMagasin(),
+		VerificationFactice: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &banc{srv: s, base: b, schema: sc, tampon: tp, journal: j}
+}
+
+func (b *banc) compter(t *testing.T) (participations, reponses int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := b.base.Pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM participation), (SELECT count(*) FROM reponse)").
+		Scan(&participations, &reponses); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// navigateur imite un navigateur sans JavaScript : il suit les liens et
+// envoie les formulaires, et garde le cookie de session (le cookiejar de Go
+// n'envoie pas les cookies Secure en HTTP).
+type navigateur struct {
+	t      *testing.T
+	h      http.Handler
+	cookie *http.Cookie
+}
+
+type page struct {
+	statut   int
+	corps    string
+	location string
+	entetes  http.Header
+}
+
+func (n *navigateur) faire(req *http.Request) page {
+	n.t.Helper()
+	if n.cookie != nil {
+		req.AddCookie(n.cookie)
+	}
+	rec := httptest.NewRecorder()
+	n.h.ServeHTTP(rec, req)
+	res := rec.Result()
+	for _, c := range res.Cookies() {
+		if c.Name != session.NomCookie {
+			continue
+		}
+		if c.MaxAge < 0 {
+			n.cookie = nil
+		} else {
+			n.cookie = c
+		}
+	}
+	corps, _ := io.ReadAll(res.Body)
+	return page{statut: res.StatusCode, corps: string(corps), location: res.Header.Get("Location"), entetes: res.Header}
+}
+
+func (n *navigateur) get(chemin string) page {
+	return n.faire(httptest.NewRequest(http.MethodGet, chemin, nil))
+}
+
+func (n *navigateur) post(chemin string, form url.Values) page {
+	req := httptest.NewRequest(http.MethodPost, chemin, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return n.faire(req)
+}
+
+var (
+	reInput      = regexp.MustCompile(`<input[^>]*>`)
+	reAttr       = regexp.MustCompile(`(\w+)="([^"]*)"`)
+	reFormAction = regexp.MustCompile(`<form[^>]*action="([^"]*)"`)
+)
+
+// champs liste les couples (nom, valeur) des champs d'une page.
+func champs(corps string) (types map[string]string, valeurs map[string][]string) {
+	types, valeurs = map[string]string{}, map[string][]string{}
+	for _, in := range reInput.FindAllString(corps, -1) {
+		a := map[string]string{}
+		for _, m := range reAttr.FindAllStringSubmatch(in, -1) {
+			a[m[1]] = m[2]
+		}
+		types[a["name"]] = a["type"]
+		valeurs[a["name"]] = append(valeurs[a["name"]], a["value"])
+	}
+	return
+}
+
+// formulaireVoulu donne des réponses qui encodent i (i < 320) dans Q1, Q2,
+// Q4 et Q6, pour reconnaître chaque réponse dans le dump.
+func formulaireVoulu(i int) url.Values {
+	return url.Values{
+		"q1": {strconv.Itoa(i % 5)}, "q2": {strconv.Itoa(i / 5 % 4)}, "q3": {strconv.Itoa(i % 5)},
+		"q4": {strconv.Itoa(i / 20 % 4)}, "q5": {strconv.Itoa(i % 5)}, "q6": {strconv.Itoa(i / 80 % 4)},
+		"q7": {"1", "4"}, "themes": {"2", "7", "11"},
+		"region": {strconv.Itoa(i % 16)}, "tranche_age": {strconv.Itoa(i % 6)},
+		"sexe": {strconv.Itoa(i % 3)}, "inscrit": {strconv.Itoa(i % 4)},
+		questionnaire.ChampMajeur: {"1"},
+	}
+}
+
+func indiceReponse(q1, q2, q4, q6 int) int { return q1 + 5*q2 + 20*q4 + 80*q6 }
+
+// numeroDeTest renvoie le i-ième numéro, saisi avec des espaces comme le ferait
+// une personne, et sa forme normalisée.
+func numeroDeTest(i int) (saisie, normalise string) {
+	n := fmt.Sprintf("77%07d", (1234567+i*48271)%10000000)
+	return n[:2] + " " + n[2:5] + " " + n[5:7] + " " + n[7:], "+221" + n
+}
+
+// parcourir fait tout le parcours, de l'accueil à la page Merci, comme une
+// personne sans JavaScript. Il renvoie la dernière page.
+func parcourir(t *testing.T, b *banc, saisie string, form url.Values) page {
+	t.Helper()
+	n := &navigateur{t: t, h: b.srv}
+	if p := n.get("/"); !strings.Contains(p.corps, `href="/verifier"`) {
+		t.Fatal("l'accueil devrait mener au parcours")
+	}
+	p := n.get("/verifier")
+	if m := reFormAction.FindStringSubmatch(p.corps); m == nil || m[1] != "/verifier" {
+		t.Fatalf("formulaire de vérification absent : %d", p.statut)
+	}
+	p = n.post("/verifier", url.Values{"numero": {saisie}})
+	if p.statut != http.StatusSeeOther {
+		return p
+	}
+	if p.location != "/questionnaire" || n.cookie == nil {
+		t.Fatalf("vérification : %d vers %q", p.statut, p.location)
+	}
+	p = n.get(p.location)
+	types, offerts := champs(p.corps)
+	for nom, vs := range form {
+		for _, v := range vs {
+			if !contient(offerts[nom], v) {
+				t.Fatalf("le questionnaire n'offre pas %s=%s", nom, v)
+			}
+		}
+		if nom != questionnaire.ChampMajeur && types[nom] != "radio" && types[nom] != "checkbox" {
+			t.Fatalf("%s : type %q", nom, types[nom])
+		}
+	}
+	m := reFormAction.FindStringSubmatch(p.corps)
+	if m == nil {
+		t.Fatal("formulaire du questionnaire absent")
+	}
+	p = n.post(m[1], form)
+	if p.statut != http.StatusOK || !strings.Contains(texte(p.corps), "Votre réponse est définitive et ne pourra pas être modifiée, car nous ne pouvons pas la retrouver.") {
+		t.Fatalf("récapitulatif : %d", p.statut)
+	}
+	// Le récapitulatif renvoie les réponses par ses champs cachés.
+	_, caches := champs(p.corps)
+	m = reFormAction.FindStringSubmatch(p.corps)
+	p = n.post(m[1], caches)
+	if p.statut != http.StatusSeeOther {
+		return p
+	}
+	if p.location != "/merci" || n.cookie != nil {
+		t.Fatalf("envoi : %d vers %q, cookie %v", p.statut, p.location, n.cookie)
+	}
+	return n.get(p.location)
+}
+
+func contient(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
+
+func TestParcoursSansJavaScriptEtRienAvantConfirmation(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	n := &navigateur{t: t, h: b.srv}
+	saisie, _ := numeroDeTest(1)
+
+	p := n.post("/verifier", url.Values{"numero": {saisie}})
+	if p.statut != http.StatusSeeOther {
+		t.Fatalf("vérification : %d", p.statut)
+	}
+	sc := p.entetes.Get("Set-Cookie")
+	for _, attr := range []string{"HttpOnly", "Secure", "SameSite=Strict", "Path=/"} {
+		if !strings.Contains(sc, attr) {
+			t.Errorf("cookie sans %s : %q", attr, sc)
+		}
+	}
+	p = n.get("/questionnaire")
+	if !strings.Contains(texte(p.corps), "Je déclare avoir 18 ans ou plus.") || !strings.Contains(texte(p.corps), "Emploi des jeunes") {
+		t.Fatal("questionnaire incomplet")
+	}
+	// Questionnaire incomplet : erreurs, valeurs conservées, rien d'enregistré.
+	f := formulaireVoulu(3)
+	delete(f, questionnaire.ChampMajeur)
+	f["themes"] = []string{"1", "2"}
+	p = n.post("/questionnaire/recapitulatif", f)
+	c := texte(p.corps)
+	if p.statut != http.StatusUnprocessableEntity || !strings.Contains(c, "Vous devez avoir 18 ans ou plus pour répondre.") ||
+		!strings.Contains(c, "Choisissez exactement 3 thèmes, ou seulement") || !strings.Contains(p.corps, `value="2" checked`) {
+		t.Fatalf("erreurs attendues : %d", p.statut)
+	}
+	// Récapitulatif, puis « Modifier » : le questionnaire revient prérempli.
+	p = n.post("/questionnaire/recapitulatif", formulaireVoulu(3))
+	// Seuls les thèmes choisis (2, 7, 11) y figurent.
+	if c := texte(p.corps); p.statut != http.StatusOK || strings.Contains(c, "Emploi des jeunes") || !strings.Contains(c, "Coût de la vie") {
+		t.Fatalf("récapitulatif : %d", p.statut)
+	}
+	if !strings.Contains(p.corps, `formaction="/questionnaire"`) {
+		t.Error("bouton Modifier absent")
+	}
+	_, caches := champs(p.corps)
+	p = n.post("/questionnaire", caches)
+	if p.statut != http.StatusOK || !strings.Contains(p.corps, `name="themes" value="7" checked`) {
+		t.Fatalf("modification : %d", p.statut)
+	}
+	if np, nr := b.compter(t); np != 0 || nr != 0 || b.tampon.Attente() != 0 {
+		t.Fatalf("rien ne doit être enregistré avant la confirmation : %d, %d, %d", np, nr, b.tampon.Attente())
+	}
+	// Confirmation : l'envoi part dans le tampon, pas encore en base.
+	p = n.post("/envoyer", caches)
+	if p.statut != http.StatusSeeOther || p.location != "/merci" || n.cookie != nil {
+		t.Fatalf("envoi : %d %q", p.statut, p.location)
+	}
+	if np, nr := b.compter(t); np != 0 || nr != 0 || b.tampon.Attente() != 1 {
+		t.Fatalf("l'envoi doit attendre dans le tampon : %d, %d, %d", np, nr, b.tampon.Attente())
+	}
+	if err := b.tampon.Vider(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if np, nr := b.compter(t); np != 1 || nr != 1 {
+		t.Fatalf("après écriture : %d, %d", np, nr)
+	}
+	// La session est détruite : un second envoi est refusé.
+	if p := n.post("/envoyer", caches); p.statut != http.StatusUnauthorized || !strings.Contains(p.corps, "Votre session a expiré") {
+		t.Errorf("envoi sans session : %d", p.statut)
+	}
+}
+
+func TestDoublonEnBaseEtDansLeTampon(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	saisie, norm := numeroDeTest(7)
+	if p := parcourir(t, b, saisie, formulaireVoulu(1)); p.statut != http.StatusOK || !strings.Contains(texte(p.corps), "Merci") {
+		t.Fatalf("premier envoi : %d", p.statut)
+	}
+	deja := "Ce numéro a déjà participé. Merci !"
+	// Encore dans le tampon, même saisi autrement.
+	for _, s := range []string{saisie, norm, "00" + norm[1:]} {
+		p := parcourir(t, b, s, formulaireVoulu(2))
+		if p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
+			t.Fatalf("doublon dans le tampon (%d) : %d", len(s), p.statut)
+		}
+	}
+	if err := b.tampon.Vider(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// En base.
+	if p := parcourir(t, b, saisie, formulaireVoulu(2)); p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
+		t.Fatalf("doublon en base : %d", p.statut)
+	}
+
+	// Deux sessions vérifiées avec le même numéro : la seconde à envoyer est refusée.
+	autre, _ := numeroDeTest(8)
+	n1, n2 := &navigateur{t: t, h: b.srv}, &navigateur{t: t, h: b.srv}
+	n1.post("/verifier", url.Values{"numero": {autre}})
+	n2.post("/verifier", url.Values{"numero": {autre}})
+	if p := n1.post("/envoyer", formulaireVoulu(4)); p.statut != http.StatusSeeOther {
+		t.Fatalf("premier envoi : %d", p.statut)
+	}
+	if p := n2.post("/envoyer", formulaireVoulu(5)); p.statut != http.StatusConflict || !strings.Contains(texte(p.corps), deja) {
+		t.Fatalf("second envoi : %d", p.statut)
+	}
+	_ = b.tampon.Vider(context.Background())
+	if np, nr := b.compter(t); np != 2 || nr != 2 {
+		t.Errorf("%d participations, %d réponses ; 2 attendues", np, nr)
+	}
+}
+
+func TestVerificationRefuseLesNumerosInvalides(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	n := &navigateur{t: t, h: b.srv}
+	for saisie, message := range map[string]string{
+		"12345":        "Ce numéro n'est pas un numéro mobile sénégalais valide.",
+		"33 123 45 67": "Ce préfixe ne correspond pas",
+	} {
+		p := n.post("/verifier", url.Values{"numero": {saisie}})
+		if p.statut != http.StatusUnprocessableEntity || !strings.Contains(texte(p.corps), message) || n.cookie != nil {
+			t.Errorf("%q : %d", saisie, p.statut)
+		}
+		if strings.Contains(p.corps, saisie) {
+			t.Errorf("le numéro saisi ne doit pas être réaffiché")
+		}
+	}
+}
+
+func TestParcoursGardeParLaSessionEtLaPhase(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	n := &navigateur{t: t, h: b.srv}
+	if p := n.get("/questionnaire"); p.statut != http.StatusSeeOther || p.location != "/verifier" {
+		t.Errorf("questionnaire sans session : %d %q", p.statut, p.location)
+	}
+	if p := n.post("/questionnaire/recapitulatif", formulaireVoulu(1)); p.statut != http.StatusUnauthorized {
+		t.Errorf("récapitulatif sans session : %d", p.statut)
+	}
+	// Consultation pas encore ouverte, ou close : retour à l'accueil.
+	for _, ouverture := range []string{"2027-01-15", "2026-01-01", config.ACompleter} {
+		b := nouveauBanc(t, map[string]string{"DIGUEE_OUVERTURE": ouverture})
+		n := &navigateur{t: t, h: b.srv}
+		if p := n.get("/verifier"); p.statut != http.StatusSeeOther || p.location != "/" {
+			t.Errorf("ouverture %s : %d", ouverture, p.statut)
+		}
+		if p := n.get("/"); strings.Contains(p.corps, `href="/verifier"`) {
+			t.Errorf("ouverture %s : l'accueil ne doit pas mener au parcours", ouverture)
+		}
+	}
+}
+
+func TestAccueilMeneAuParcours(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	_, corps := get(t, b.srv, "/")
+	if !strings.Contains(corps, `<a class="btn" href="/verifier">Répondre à la consultation</a>`) {
+		t.Error("le bouton de l'accueil devrait être un lien vers le parcours")
+	}
+}
+
+func TestPagesDuParcoursLegeresSansScript(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	_, css := get(t, b.srv, "/statique/diguee.css")
+	_, logo := get(t, b.srv, "/statique/logo.svg")
+	n := &navigateur{t: t, h: b.srv}
+	saisie, _ := numeroDeTest(11)
+	pages := map[string]page{"verifier": n.get("/verifier")}
+	n.post("/verifier", url.Values{"numero": {saisie}})
+	pages["questionnaire"] = n.get("/questionnaire")
+	pages["questionnaire avec erreurs"] = n.post("/questionnaire/recapitulatif", url.Values{})
+	pages["recapitulatif"] = n.post("/questionnaire/recapitulatif", formulaireVoulu(9))
+	_, caches := champs(pages["recapitulatif"].corps)
+	n.post("/envoyer", caches)
+	pages["merci"] = n.get("/merci")
+	pages["deja"] = parcourir(t, b, saisie, formulaireVoulu(9))
+	pages["session expiree"] = n.post("/envoyer", caches)
+	for nom, p := range pages {
+		if poids := len(p.corps) + len(css) + len(logo); poids >= 100*1024 {
+			t.Errorf("%s pèse %d octets", nom, poids)
+		}
+		bas := strings.ToLower(p.corps)
+		for _, interdit := range []string{"<script", "javascript:", " onload=", " onclick=", " onsubmit=", " onchange="} {
+			if strings.Contains(bas, interdit) {
+				t.Errorf("%s contient %q", nom, interdit)
+			}
+		}
+		// Seul lien sortant : le partage WhatsApp de la page Merci, sans identifiant.
+		externes := strings.Count(bas, "https://") + strings.Count(bas, "http://")
+		if nom == "merci" {
+			if externes != 1 || !strings.Contains(p.corps, `href="https://wa.me/?text=`) {
+				t.Errorf("merci : lien de partage attendu")
+			}
+		} else if externes != 0 {
+			t.Errorf("%s contient un lien sortant", nom)
+		}
+		if strings.Contains(p.corps, "⟦") {
+			t.Errorf("%s utilise une clé absente du catalogue", nom)
+		}
+		if cc := p.entetes.Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s : Cache-Control %q", nom, cc)
+		}
+	}
+}
+
+func TestCataloguesCouvrentLeQuestionnaire(t *testing.T) {
+	cs, _ := i18n.Charger()
+	fr := cs.Choisir("fr")
+	q := questionnaire.Courant()
+	cles := []string{q.CleMajeur, questionnaire.ErrObligatoire, questionnaire.ErrInvalide,
+		questionnaire.ErrExclusif, questionnaire.ErrThemes, questionnaire.ErrMajeur}
+	for _, x := range q.Questions {
+		cles = append(cles, x.Cle)
+		if x.Aide != "" {
+			cles = append(cles, x.Aide)
+		}
+		for _, c := range x.Choix {
+			cles = append(cles, c.Cle)
+		}
+	}
+	for _, c := range cles {
+		if !fr.Existe(c) {
+			t.Errorf("clé %q absente du catalogue fr", c)
+		}
+	}
+}
+
+func TestVerificationFacticeInterditeEnProduction(t *testing.T) {
+	cfg, _ := config.Charger(func(k string) string {
+		return map[string]string{"DIGUEE_ENV": "production", "DIGUEE_POSTGRES_URL": "x"}[k]
+	})
+	cs, _ := i18n.Charger()
+	if _, err := Nouveau(Options{Config: cfg, Catalogues: cs, VerificationFactice: true}); err == nil {
+		t.Error("la vérification factice doit être refusée en production")
+	}
+}
+
+// pgDump renvoie le dump complet du schéma de test.
+func pgDump(t *testing.T, sc basetest.Schema) string {
+	t.Helper()
+	outil := os.Getenv("DIGUEE_TEST_PG_DUMP")
+	if outil == "" {
+		outil = "pg_dump"
+	}
+	if _, err := exec.LookPath(outil); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("pg_dump introuvable : %v", err)
+		}
+		t.Skipf("pg_dump introuvable (DIGUEE_TEST_PG_DUMP) : test sauté")
+	}
+	u, err := url.Parse(sc.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Del("search_path")
+	u.RawQuery = q.Encode()
+	out, err := exec.Command(outil, "--no-owner", "--schema="+sc.Nom, "--dbname="+u.String()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pg_dump : %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// lignesCopy renvoie les lignes de données du bloc COPY d'une table.
+func lignesCopy(t *testing.T, dump, table string) (colonnes []string, lignes [][]string) {
+	t.Helper()
+	sc := bufio.NewScanner(strings.NewReader(dump))
+	dedans := false
+	reEntete := regexp.MustCompile(`^COPY \S+\.` + table + ` \(([^)]*)\) FROM stdin;$`)
+	for sc.Scan() {
+		l := sc.Text()
+		switch {
+		case !dedans:
+			if m := reEntete.FindStringSubmatch(l); m != nil {
+				dedans = true
+				colonnes = strings.Split(m[1], ", ")
+			}
+		case l == `\.`:
+			return colonnes, lignes
+		default:
+			lignes = append(lignes, strings.Split(l, "\t"))
+		}
+	}
+	t.Fatalf("bloc COPY de %s introuvable", table)
+	return nil, nil
+}
+
+// T1 et T2 (spec §14) sur 200 envois faits par tout le parcours web.
+func Test200EnvoisDumpSansNumeroNiIPNiHeureEtSansAppariement(t *testing.T) {
+	b := nouveauBanc(t, map[string]string{})
+	const nb = 200
+	empreintes := map[string]int{} // empreinte (hex) -> ordre d'arrivée
+	var numeros []string
+	h := empreinte.NouveauHMACLocal(nil)
+	for i := range nb {
+		saisie, norm := numeroDeTest(i)
+		numeros = append(numeros, norm)
+		e, _ := h.Calculer(context.Background(), norm)
+		empreintes[hex.EncodeToString(e[:])] = i
+		if p := parcourir(t, b, saisie, formulaireVoulu(i)); p.statut != http.StatusOK {
+			t.Fatalf("envoi %d : %d", i, p.statut)
+		}
+	}
+	if b.tampon.Attente() != 0 {
+		t.Fatalf("200 envois = 10 lots de 20 : %d en attente", b.tampon.Attente())
+	}
+	if np, nr := b.compter(t); np != nb || nr != nb {
+		t.Fatalf("%d participations, %d réponses", np, nr)
+	}
+	dump := pgDump(t, b.schema)
+	journal := b.journal.String()
+
+	// T1 (et T3 pour le journal applicatif) : ni numéro, ni IP, ni heure.
+	for _, src := range []struct{ nom, contenu string }{{"dump", dump}, {"journal", journal}} {
+		for _, num := range numeros {
+			for _, forme := range []string{num, num[4:], num[1:], num[4:6] + " " + num[6:9]} {
+				if strings.Contains(src.contenu, forme) {
+					t.Fatalf("%s : contient un numéro", src.nom)
+				}
+			}
+		}
+		if m := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b|192\.0\.2\.|\[?::1\]?`).FindString(src.contenu); m != "" {
+			t.Errorf("%s : adresse IP %q", src.nom, m)
+		}
+	}
+	donnees := regexp.MustCompile(`(?m)^--.*$`).ReplaceAllString(dump, "")
+	for _, motif := range []string{`\d{1,2}:\d{2}`, `(?i)\btimestamp`, `(?i)\btime\b`, `(?i)\binterval\b`, `(?i)\bserial\b`, `(?i)nextval`} {
+		if m := regexp.MustCompile(motif).FindString(donnees); m != "" {
+			t.Errorf("dump : horodatage ou séquence %q", m)
+		}
+	}
+	colsR, reps := lignesCopy(t, dump, "reponse")
+	_, parts := lignesCopy(t, dump, "participation")
+	if len(reps) != nb || len(parts) != nb {
+		t.Fatalf("%d réponses, %d participations dans le dump", len(reps), len(parts))
+	}
+	col := map[string]int{}
+	for i, c := range colsR {
+		col[c] = i
+	}
+	if len(colsR) != 15 {
+		t.Errorf("colonnes de reponse : %v", colsR)
+	}
+	jourAttendu := time.Now().UTC().Format(time.DateOnly)
+	ordreReponses := make([]int, nb)
+	for k, l := range reps {
+		if j := l[col["jour"]]; j != jourAttendu && j != time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly) {
+			t.Errorf("jour %q", j)
+		}
+		v := func(c string) int { n, _ := strconv.Atoi(l[col[c]]); return n }
+		ordreReponses[k] = indiceReponse(v("q1"), v("q2"), v("q4"), v("q6"))
+	}
+	ordreParticipations := make([]int, nb)
+	for k, l := range parts {
+		i, ok := empreintes[strings.TrimPrefix(l[0], `\\x`)]
+		if !ok {
+			t.Fatalf("empreinte inconnue dans le dump : %q", l[0])
+		}
+		ordreParticipations[k] = i
+	}
+
+	// T2. L'attaquant connaît l'ordre d'arrivée des 200 envois et donc les
+	// lots (envois 0-19, 20-39…). Au hasard, apparier la k-ième participation
+	// du dump avec la k-ième réponse donne un bon appariement par lot en
+	// moyenne (10 sur 200, loi proche de Poisson(10)) ; sans mélange, on en
+	// aurait 200. Seuil : 30 (probabilité de dépassement au hasard < 1e-7).
+	apparies, enPlaceP, enPlaceR := 0, 0, 0
+	for k := range nb {
+		if ordreParticipations[k] == ordreReponses[k] {
+			apparies++
+		}
+		if ordreParticipations[k] == k {
+			enPlaceP++
+		}
+		if ordreReponses[k] == k {
+			enPlaceR++
+		}
+	}
+	if apparies > 30 || enPlaceP > 30 || enPlaceR > 30 {
+		t.Errorf("appariements %d, participations à leur place %d, réponses à leur place %d (≈ 10 attendus au hasard)",
+			apparies, enPlaceP, enPlaceR)
+	}
+	// Dans chaque lot, l'ordre du dump ne suit pas l'ordre d'arrivée : parmi
+	// les 1 900 paires d'envois d'un même lot, la part rangée dans le même
+	// ordre est proche de 1/2 (écart type ≈ 0,026 ; bornes à plus de 5 écarts).
+	for nom, ordre := range map[string][]int{"participations": ordreParticipations, "réponses": ordreReponses} {
+		position := make([]int, nb)
+		for k, i := range ordre {
+			position[i] = k
+		}
+		concordantes, paires := 0, 0
+		for i := range nb {
+			for j := i + 1; j < nb && j/20 == i/20; j++ {
+				paires++
+				if position[i] < position[j] {
+					concordantes++
+				}
+			}
+		}
+		if f := float64(concordantes) / float64(paires); f < 0.35 || f > 0.65 {
+			t.Errorf("%s : %.2f des paires gardent l'ordre d'arrivée (0,5 attendu au hasard)", nom, f)
+		}
+	}
+}

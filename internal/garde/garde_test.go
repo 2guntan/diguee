@@ -67,3 +67,18 @@ func TestDeveloppementToleré(t *testing.T) {
 		t.Errorf("%d manques, attendu 8 (7 valeurs et 1 intégration)", n)
 	}
 }
+
+type provisoires []string
+
+func (p provisoires) Provisoires() []string { return p }
+
+func TestProductionRefuseLesAutresProvisoires(t *testing.T) {
+	c := charger(t, complete("production"))
+	err := Verifier(c, &integration.Registre{}, provisoires{"questionnaire v1 : q5 provisoire"})
+	if err == nil || !strings.Contains(err.Error(), "q5") {
+		t.Fatalf("refus attendu : %v", err)
+	}
+	if err := Verifier(c, &integration.Registre{}, provisoires{}); err != nil {
+		t.Fatal(err)
+	}
+}

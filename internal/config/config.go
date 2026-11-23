@@ -10,6 +10,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,10 @@ type Config struct {
 	Env         Env    // DIGUEE_ENV : development (défaut) ou production
 	Adresse     string // DIGUEE_ADRESSE : adresse d'écoute HTTP, « :8080 » par défaut
 	PostgresURL string // DIGUEE_POSTGRES_URL : secret, obligatoire
+
+	// Intégrations externes : « fake » désigne une fausse implémentation,
+	// interdite en production (paquet garde).
+	Empreinteur string // DIGUEE_EMPREINTEUR : fake (défaut, HMAC de développement) ; ovh au ticket #5
 
 	// Responsable du traitement (ADR 0005) et contacts.
 	StructureNom     Texte // DIGUEE_STRUCTURE_NOM
@@ -103,6 +108,8 @@ func Charger(getenv func(string) string) (*Config, error) {
 	if c.PostgresURL == "" {
 		l.erreur("DIGUEE_POSTGRES_URL", errors.New("est obligatoire"))
 	}
+
+	c.Empreinteur = l.choix("DIGUEE_EMPREINTEUR", "fake", "fake")
 
 	c.StructureNom = l.texte("DIGUEE_STRUCTURE_NOM")
 	c.StructureAdresse = l.texte("DIGUEE_STRUCTURE_ADRESSE")
@@ -195,6 +202,15 @@ func (l *lecteur) chaine(nom, defaut string) string {
 		return v
 	}
 	return defaut
+}
+
+// choix lit une valeur parmi une liste fermée.
+func (l *lecteur) choix(nom, defaut string, permis ...string) string {
+	v := l.chaine(nom, defaut)
+	if !slices.Contains(permis, v) {
+		l.erreur(nom, fmt.Errorf("vaut %q ; valeurs possibles : %s", v, strings.Join(permis, ", ")))
+	}
+	return v
 }
 
 func (l *lecteur) texte(nom string) Texte {
