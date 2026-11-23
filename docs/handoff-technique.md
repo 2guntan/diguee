@@ -42,7 +42,7 @@ Le site actuel montre la question nº 1 avec ses 5 réponses, mais le formulaire
 
 ## 4. Questions ouvertes à trancher
 
-Ce sont les sujets du grilling ; aucun n'est décidé.
+Tous ces points ont été tranchés pendant le grilling du 22/11/2026 : voir `docs/adr/` (0001 à 0010), `CONTEXT.md` et le §9. La CDP est gérée par le porteur. Le §8 a été amendé : pas de Cloudflare devant la consultation (ADR 0007), profil à 4 critères (§9), hébergement chez OVHcloud (ADR 0006).
 
 1. **Anonymat et doublons** : empêcher qu'un même numéro réponde deux fois sans jamais relier le numéro à la réponse. Pistes : HMAC du numéro avec un secret serveur, table séparée, durée de conservation.
 2. **Envoi des codes** :
@@ -147,3 +147,11 @@ Les décisions difficiles à défaire sont dans `docs/adr/`, et le vocabulaire d
 - **Engagements prioritaires** : une liste fermée d'une dizaine de thèmes, dont on choisit 3, sans texte libre. La liste reste à rédiger avec le porteur ou l'institut de sondage.
 - **Diaspora** : seuls les numéros +221 sont acceptés en phase 1. La méthodologie le précise.
 - **Seuils de publication** : au moins 30 réponses par case, sinon la case affiche « moins de 30 réponses ». Les cases sont publiées en pourcentages arrondis à l'unité, et seuls les effectifs globaux, arrondis à la dizaine, apparaissent. Masquage complémentaire : si une seule case d'une ligne est masquée, la plus petite des autres l'est aussi. Pas de pondération en phase 1 : les résultats sont bruts, publiés à côté de la composition de l'échantillon et des chiffres de l'ANSD. Ces paramètres figurent dans la méthodologie publiée.
+
+### Restent à faire avant la spécification
+
+- Vérifier que la signature RSA du KMS OVHcloud est bien déterministe (prérequis de l'ADR 0006), et confirmer ses tarifs.
+- Rédiger la liste fermée des thèmes et fixer les tranches d'âge, avec le porteur ou l'institut de sondage.
+- Confirmer auprès de l'ARTP la liste des préfixes mobiles.
+- Vérifier la grille tarifaire de Meta pour les messages entrants et les messages d'authentification au Sénégal.
+- Recopier `site/index.html` (FAQ corrigée) dans `public_html/` chez PlanetHoster.

@@ -56,6 +56,10 @@ _Avoid_ : quorum
 Le recalcul des résultats, une fois par jour à heure fixe, sur les réponses écrites jusqu'à la veille, consigné dans le journal public.
 _Avoid_ : résultats en direct, temps réel
 
+**Journal public** :
+La suite chaînée et horodatée hors de nos serveurs de tout ce que Diguee publie ou change : résultats, statuts, versions du code, méthodologie, destruction à la clôture.
+_Avoid_ : log, historique
+
 ### Observatoire
 
 **Engagement** :
